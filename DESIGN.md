@@ -196,7 +196,7 @@ switch (coinflip.get("heads")) {
 
 ### Model (`model/`)
 
-POJOs generated from the [Argo Workflows JSON schema](https://raw.githubusercontent.com/argoproj/argo-workflows/main/api/jsonschema/schema.json) via `jsonschema2pojo`. Jackson annotations for YAML/JSON deserialization. Kubernetes base types sourced from the fabric8 model or minimally stubbed.
+POJOs generated from the Argo Workflows OpenAPI spec (`argo-workflows/api/openapi-spec/swagger.json`) via `openapi-generator-maven-plugin`. A preprocessing step (exec-maven-plugin + `sed`) strips the `io.argoproj.workflow.v1alpha1.` prefix from all definition keys before generation, giving clean class names (`Workflow`, `WorkflowSpec`, `Template`, `ScriptTemplate`, etc.) for Argo types while Kubernetes types retain their verbose prefix-derived names (`IoK8sApiCoreV1Container`, etc.) to avoid name collisions. Jackson annotations for YAML/JSON deserialization. No external Kubernetes client dependency.
 
 ### Expression Engine (`expression/`)
 

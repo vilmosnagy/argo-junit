@@ -1,0 +1,60 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: delayed-dag-
+spec:
+  arguments:
+    parameters:
+      - name: release_port
+        value: "0"
+  entrypoint: delayed-diamond
+  templates:
+    - name: delayed-diamond
+      dag:
+        tasks:
+          - name: fast-start
+            template: fast
+            arguments:
+              parameters:
+                - name: message
+                  value: "fast-start"
+          - name: slow-start
+            template: wait-for-release
+          - name: fast-b
+            depends: "slow-start"
+            template: fast
+            arguments:
+              parameters:
+                - name: message
+                  value: "B"
+          - name: fast-c
+            depends: "slow-start"
+            template: fast
+            arguments:
+              parameters:
+                - name: message
+                  value: "C"
+
+    - name: wait-for-release
+      script:
+        image: python:alpine3.23
+        command: [python3]
+        source: |
+          import urllib.request, urllib.error, time
+          while True:
+              try:
+                  urllib.request.urlopen(
+                      'http://host.testcontainers.internal:{{workflow.parameters.release_port}}/ready',
+                      timeout=1)
+                  break
+              except Exception:
+                  pass
+              time.sleep(0.1)
+
+    - name: fast
+      inputs:
+        parameters:
+          - name: message
+      container:
+        image: busybox
+        command: [echo, "{{inputs.parameters.message}}"]

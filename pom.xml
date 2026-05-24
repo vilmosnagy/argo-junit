@@ -48,6 +48,23 @@
         </dependency>
 
         <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>1.7.36</version>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>1.20.4</version>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>1.2.13</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>5.11.0</version>
@@ -106,9 +123,9 @@
                         <configuration>
                             <inputSpec>${project.build.directory}/argo-swagger.json</inputSpec>
                             <generatorName>java</generatorName>
-                            <modelPackage>eu.vnagy.argotools.model</modelPackage>
-                            <apiPackage>eu.vnagy.argotools.generated.api</apiPackage>
-                            <invokerPackage>eu.vnagy.argotools.generated</invokerPackage>
+                            <modelPackage>eu.vnagy.argotools.junit.model</modelPackage>
+                            <apiPackage>eu.vnagy.argotools.junit.generated.api</apiPackage>
+                            <invokerPackage>eu.vnagy.argotools.junit.generated</invokerPackage>
                             <generateApis>false</generateApis>
                             <generateModelTests>false</generateModelTests>
                             <generateModelDocumentation>false</generateModelDocumentation>

@@ -42,7 +42,7 @@ ArgoWorkflowExecutor (Java)
 
 ## Planned Feature Set
 
-The following is the **target scope**, not current functionality. The library currently supports nothing; features will be added incrementally per the build order below.
+Features will be added incrementally per the build order below.
 
 ### In scope
 
@@ -75,19 +75,24 @@ The following is the **target scope**, not current functionality. The library cu
 
 ```java
 public class ArgoWorkflowExecutor {
+    // All three from() variants eagerly parse the workflow YAML into a Workflow model object.
     public static ArgoWorkflowExecutor from(Path workflowFile);
     public static ArgoWorkflowExecutor from(String workflowYaml);
     public static ArgoWorkflowExecutor from(Workflow workflow);
 
     // Starts kwok if not already running and returns a fabric8 client pointed at it.
     // Call this before execute() when the test needs to pre-populate Secrets, ConfigMaps, etc.
-    public KubernetesClient getKubernetesClient();
+    public KubernetesClient getKubernetesClient();   // planned
 
-    public WorkflowRun execute();
+    // Non-blocking: launches execution on a daemon thread pool, returns immediately.
+    public LiveWorkflowRun executeAsync() throws Exception;
+
+    // Blocking convenience wrapper: equivalent to executeAsync().await().
+    public WorkflowRun execute() throws Exception;
 }
 ```
 
-`from()` stores the input without side effects; parsing and validation happen inside `execute()`. `execute()` also starts kwok lazily if it hasn't been started yet and the workflow requires it (e.g. artifact credential resolution). `execute()` blocks until the workflow reaches a terminal state, then returns.
+`from()` parses the workflow immediately. `executeAsync()` resolves templates, extracts workflow-level parameters, and launches execution. It returns a `LiveWorkflowRun` before any task has started. `execute()` is a thin synchronous wrapper over `executeAsync().await()`.
 
 ### WorkflowNode hierarchy
 
@@ -99,8 +104,12 @@ public sealed interface WorkflowNode permits DagRun, StepsRun, PodRun {
     boolean succeeded();
     boolean failed();
     boolean skipped();
+    boolean running();
+    boolean pending();
 }
 ```
+
+`DagRun` and `StepsRun` aggregate child state: `running()` = any child running; `pending()` = all children pending.
 
 ```java
 public final class DagRun implements WorkflowNode {
@@ -120,24 +129,49 @@ public final class StepsRun implements WorkflowNode {
 
 ```java
 public final class PodRun implements WorkflowNode {
+    public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, SKIPPED }
+
+    public Status status();
     public int exitCode();
     public String logs();
+    public Duration duration();
 
     // outputs.result — stdout of a script template. Empty for container templates.
     public Optional<String> outputResult();
-    public Optional<String> outputParameter(String name);
+    public Optional<String> outputParameter(String name);  // planned
 
     // Stopped by the time WorkflowRun is returned, but getLogs() etc. remain accessible.
     public GenericContainer<?> container();
 }
 ```
 
+`PodRun` instances are created only via package-private factory methods (`pending()`, `running()`, `skipped()`, `completed()`). The constructor is private.
+
+### LiveWorkflowRun
+
+```java
+public final class LiveWorkflowRun {
+    // Returns an immutable snapshot of the current execution state.
+    // Can be called any number of times while the workflow is running.
+    public WorkflowRun snapshot();
+
+    // Blocks until the workflow completes and returns the final result.
+    public WorkflowRun await() throws Exception;
+
+    public boolean isDone();
+}
+```
+
+`snapshot()` reconstructs the full `WorkflowNode` tree on every call, merging the template structure with the live `podStates` map. Tasks not yet started appear as `PENDING`.
+
 ### WorkflowRun
 
 ```java
-public interface WorkflowRun {
+public final class WorkflowRun {
     boolean succeeded();
     boolean failed();
+    boolean running();
+    boolean pending();
 
     // Returns the top-level node (the entrypoint template). 
     // Navigate into it via DagRun/StepsRun.get() for specific steps/tasks.
@@ -200,13 +234,13 @@ POJOs generated from the Argo Workflows OpenAPI spec (`argo-workflows/api/openap
 
 ### Expression Engine (`expression/`)
 
-Two responsibilities:
+Two responsibilities, currently implemented inline in the executor:
 
-**Template substitution** — regex-based replacement of `{{...}}` placeholders against an `ExecutionContext` holding `workflow.*`, `inputs.parameters.*`, `steps.<n>.outputs.*`, and `tasks.<n>.outputs.*`. Runs before any condition evaluation.
+**Template substitution** — regex-based replacement of `{{...}}` placeholders. Three patterns resolved in order: `{{steps.<n>.outputs.result}}` (from completed steps), `{{inputs.parameters.<name>}}` (from task/step arguments), `{{workflow.parameters.<name>}}` (from workflow-level arguments). Applied to image, command, args, script source, and `when` fields.
 
-**`when` evaluation** — after substitution, `when` fields are plain comparison strings (e.g. `"heads == heads"`). Evaluated via Apache JEXL or SpEL. No custom parser.
+**`when` evaluation** — after substitution, `when` fields are plain comparison strings (e.g. `"heads == heads"`). Currently evaluated with simple string splitting on ` == ` and ` != `; boolean literals also accepted. Full expression support planned via Apache JEXL or SpEL. No custom parser.
 
-Artifact references (`{{steps.X.outputs.artifacts.foo}}`) are not substituted as strings — the executor resolves them as artifact handles on a separate code path.
+Artifact references (`{{steps.X.outputs.artifacts.foo}}`) are not substituted as strings — the executor will resolve them as artifact handles on a separate code path (planned).
 
 ### Artifact Subsystem (`artifact/`)
 
@@ -290,7 +324,7 @@ argo-junit/
 
 ## Build Order
 
-### Phase 1 — PoC: `hello-world.yaml` + `coinflip.yaml`
+### Phase 1 — PoC: `hello-world.yaml` + `coinflip.yaml` ✓ Done
 
 Goal: end-to-end execution of the two simplest canonical workflows as fast as possible.
 
@@ -299,4 +333,16 @@ Requires: model (YAML parsing), expression substitution, `when` evaluation, `con
 - `hello-world.yaml` — single container template, no parameters, no steps
 - `coinflip.yaml` — script template, two-step group, `when` conditional, `outputs.result` passing
 
-### Phase 2+ — To be defined
+### Phase 2 — Async execution + DAG support ✓ Done
+
+Goal: parallel DAG execution with observable in-progress state.
+
+- `dag` template executor: topological sort (Kahn's algorithm), `CompletableFuture` chaining per task for true parallelism
+- `executeAsync()` returning `LiveWorkflowRun`; `snapshot()` for in-progress state observation
+- `running()` / `pending()` on all `WorkflowNode` types; `PodRun.Status` enum
+- `{{workflow.parameters.X}}` substitution; script source substitution fixed
+- Test: `LiveWorkflowRunTest` — embedded JDK HTTP server as a release trigger, deterministic observation of four simultaneous states (SUCCEEDED, RUNNING, PENDING, PENDING) mid-run
+
+### Phase 3+ — To be defined
+
+Candidates: artifact passing, kwok integration, `retryStrategy`, `WorkflowTemplate` resolution.

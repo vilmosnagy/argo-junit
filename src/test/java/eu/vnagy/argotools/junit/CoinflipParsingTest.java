@@ -1,10 +1,10 @@
-package eu.vnagy.argotools;
+package eu.vnagy.argotools.junit;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
-import eu.vnagy.argotools.model.Template;
-import eu.vnagy.argotools.model.Workflow;
+import eu.vnagy.argotools.junit.model.Template;
+import eu.vnagy.argotools.junit.model.Workflow;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;

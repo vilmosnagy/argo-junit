@@ -42,7 +42,7 @@ public final class UninitializedNode implements WorkflowNode {
     @Override
     public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
         log.debug("UninitializedNode '{}': expanding template '{}'", name, template.getName());
-        WorkflowNode planNode = DagRun.planNodeFrom(name, template, ctx.templateMap, Set.of(template.getName()));
+        WorkflowNode planNode = WorkflowNode.from(name, template, ctx.templateMap, Set.of(template.getName()));
         this.resolved = planNode;
         return planNode.executeAsync(ctx, inputParams);
     }

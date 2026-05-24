@@ -80,7 +80,7 @@ public class ArgoWorkflowExecutor {
 
         ExecutionContext ctx = new ExecutionContext(templateMap, workflowParams, threadPool);
 
-        WorkflowNode root = DagRun.planNodeFrom(entrypointName, entrypointTemplate, templateMap, Set.of());
+        WorkflowNode root = WorkflowNode.from(entrypointName, entrypointTemplate, templateMap, Set.of());
         CompletableFuture<Void> future = root.executeAsync(ctx, Map.of())
                 .thenAccept(_ -> {})
                 .whenComplete((_, _) -> threadPool.shutdown());

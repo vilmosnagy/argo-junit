@@ -46,7 +46,7 @@ public final class StepsRun implements WorkflowNode {
                 specGroup.add(new StepSpec(step.getName(), step.getWhen(), parseArgs(step)));
                 WorkflowNode child = nowConstructing.contains(stepTemplate.getName())
                         ? new UninitializedNode(step.getName(), stepTemplate)
-                        : DagRun.planNodeFrom(step.getName(), stepTemplate, templateMap, nowConstructing);
+                        : WorkflowNode.from(step.getName(), stepTemplate, templateMap, nowConstructing);
                 initialSteps.put(step.getName(), child);
             }
             builtGroups.add(List.copyOf(specGroup));

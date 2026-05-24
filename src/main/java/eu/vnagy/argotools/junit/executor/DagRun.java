@@ -61,7 +61,7 @@ public final class DagRun implements WorkflowNode {
             Template taskTemplate = templateMap.get(t.getTemplate());
             WorkflowNode child = (taskTemplate == null || nowConstructing.contains(taskTemplate.getName()))
                     ? new UninitializedNode(t.getName(), taskTemplate)
-                    : planNodeFrom(t.getName(), taskTemplate, templateMap, nowConstructing);
+                    : WorkflowNode.from(t.getName(), taskTemplate, templateMap, nowConstructing);
             initialTasks.put(t.getName(), child);
         }
         this.specs = Collections.unmodifiableList(builtSpecs);
@@ -136,20 +136,6 @@ public final class DagRun implements WorkflowNode {
     @Override public boolean pending() {
         if (skipped) return false;
         return tasks.values().stream().allMatch(WorkflowNode::pending);
-    }
-
-    /**
-     * Creates the appropriate plan node for a template. Shared with {@link StepsRun} and
-     * {@link UninitializedNode}.
-     *
-     * @param constructing template names currently being constructed — stops recursion
-     */
-    static WorkflowNode planNodeFrom(String name, Template template,
-                                     Map<String, Template> templateMap, Set<String> constructing) {
-        if (template.getDag() != null) return new DagRun(name, template, templateMap, constructing);
-        if (template.getSteps() != null && !template.getSteps().isEmpty())
-            return new StepsRun(name, template, templateMap, constructing);
-        return new PodRun(name, template);
     }
 
     private static Map<String, String> resolveArgs(DAGTask task) {

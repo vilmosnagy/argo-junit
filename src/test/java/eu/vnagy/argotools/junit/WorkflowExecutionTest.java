@@ -5,7 +5,7 @@ import eu.vnagy.argotools.junit.executor.DagRun;
 import eu.vnagy.argotools.junit.executor.PodRun;
 import eu.vnagy.argotools.junit.executor.StepsRun;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
-import eu.vnagy.argotools.junit.executor.WorkflowSummary;
+import eu.vnagy.argotools.junit.util.WorkflowSummary;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.output.OutputFrame;
 

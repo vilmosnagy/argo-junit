@@ -6,10 +6,9 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.sun.net.httpserver.HttpServer;
 import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import eu.vnagy.argotools.junit.executor.DagRun;
-import eu.vnagy.argotools.junit.executor.LiveWorkflowRun;
 import eu.vnagy.argotools.junit.executor.PodRun;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
-import eu.vnagy.argotools.junit.executor.WorkflowSummary;
+import eu.vnagy.argotools.junit.util.WorkflowSummary;
 import eu.vnagy.argotools.junit.model.Workflow;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.Testcontainers;
@@ -22,7 +21,8 @@ import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * Tests that {@link LiveWorkflowRun#snapshot()} reflects in-progress state correctly.
+ * Tests that a running {@link WorkflowRun} reflects in-progress state correctly by walking
+ * the live tree directly — no separate snapshot mechanism.
  *
  * Workflow topology (delayed-dag.yaml):
  *
@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  * workflow parameter "release_port". slow-start's Python script polls the
  * server; it stays RUNNING until the test sets the release flag.
  *
- * Expected snapshot while slow-start is held:
+ * Expected state while slow-start is held:
  *   fast-start  SUCCEEDED  — no dependencies, finishes before slow-start even starts
  *   slow-start  RUNNING    — blocked on HTTP poll
  *   fast-b      PENDING    — depends on slow-start
@@ -46,7 +46,7 @@ class LiveWorkflowRunTest {
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     @Test
-    void snapshotShowsInProgressState() throws Exception {
+    void liveTreeShowsInProgressState() throws Exception {
         HttpServer releaseServer = HttpServer.create(new InetSocketAddress(0), 0);
         int port = releaseServer.getAddress().getPort();
         AtomicBoolean released = new AtomicBoolean(false);
@@ -66,12 +66,12 @@ class LiveWorkflowRunTest {
                 .findFirst().orElseThrow()
                 .setValue(String.valueOf(port));
 
-        LiveWorkflowRun live = ArgoWorkflowExecutor.from(wf).executeAsync();
+        WorkflowRun live = ArgoWorkflowExecutor.from(wf).executeAsync();
+        DagRun dag = (DagRun) live.entrypoint();
 
         // Poll until the interesting steady-state: slow-start blocking on HTTP AND fast-start done
         long deadline = System.currentTimeMillis() + 30_000;
         while (true) {
-            DagRun dag = (DagRun) live.snapshot().entrypoint();
             boolean slowRunning = dag.get("slow-start").running();
             boolean fastDone    = dag.get("fast-start").succeeded();
             if (slowRunning && fastDone) break;
@@ -79,25 +79,22 @@ class LiveWorkflowRunTest {
             Thread.sleep(100);
         }
 
-        WorkflowRun snapshot = live.snapshot();
-        DagRun dag = (DagRun) snapshot.entrypoint();
-
         // fast-start has no dependencies — it races slow-start and wins
         assertThat("fast-start should be done",    ((PodRun) dag.get("fast-start")).succeeded(), is(true));
         assertThat("slow-start should be running", dag.get("slow-start").running(),               is(true));
         assertThat("fast-b should be pending",     dag.get("fast-b").pending(),                   is(true));
         assertThat("fast-c should be pending",     dag.get("fast-c").pending(),                   is(true));
 
-        System.out.println("=== In-progress snapshot ===");
-        System.out.println(WorkflowSummary.format(snapshot));
+        System.out.println("=== In-progress state ===");
+        System.out.println(WorkflowSummary.format(live));
 
         released.set(true); // unblock slow-start; next HTTP poll returns 200
 
-        WorkflowRun result = live.await();
-        assertThat(result.succeeded(), is(true));
+        live.await();
+        assertThat(live.succeeded(), is(true));
 
         System.out.println("=== Final result ===");
-        System.out.println(WorkflowSummary.format(result));
+        System.out.println(WorkflowSummary.format(live));
 
         releaseServer.stop(0);
     }

@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: countdown-loop-
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: release_port
+        value: "8080"
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: loop
+            template: count-down
+            arguments:
+              parameters:
+                - name: remaining
+                  value: "3"
+
+    - name: count-down
+      inputs:
+        parameters:
+          - name: remaining
+      steps:
+        - - name: wait-and-count
+            template: wait-and-count
+            arguments:
+              parameters:
+                - name: value
+                  value: "{{inputs.parameters.remaining}}"
+        - - name: recurse
+            template: count-down
+            when: "{{steps.wait-and-count.outputs.result}} != 0"
+            arguments:
+              parameters:
+                - name: remaining
+                  value: "{{steps.wait-and-count.outputs.result}}"
+
+    - name: wait-and-count
+      inputs:
+        parameters:
+          - name: value
+      script:
+        image: python:alpine3.23
+        command: [python]
+        source: |
+          import urllib.request, time
+          port = {{workflow.parameters.release_port}}
+          while True:
+              try:
+                  r = urllib.request.urlopen(f"http://host.docker.internal:{port}/ready", timeout=2)
+                  if r.status == 200:
+                      break
+              except Exception:
+                  pass
+              time.sleep(0.5)
+          print({{inputs.parameters.value}} - 1)

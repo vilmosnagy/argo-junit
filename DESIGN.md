@@ -85,27 +85,28 @@ public class ArgoWorkflowExecutor {
     public KubernetesClient getKubernetesClient();   // planned
 
     // Non-blocking: launches execution on a daemon thread pool, returns immediately.
-    public LiveWorkflowRun executeAsync() throws Exception;
+    public WorkflowRun executeAsync() throws Exception;
 
     // Blocking convenience wrapper: equivalent to executeAsync().await().
     public WorkflowRun execute() throws Exception;
 }
 ```
 
-`from()` parses the workflow immediately. `executeAsync()` resolves templates, extracts workflow-level parameters, and launches execution. It returns a `LiveWorkflowRun` before any task has started. `execute()` is a thin synchronous wrapper over `executeAsync().await()`.
+`from()` parses the workflow immediately. `executeAsync()` resolves templates, extracts workflow-level parameters, builds the full workflow tree (stopping at recursion boundaries), and launches execution. It returns a `WorkflowRun` before any task has started — the same object reflects live state throughout execution. `execute()` is a thin synchronous wrapper over `executeAsync().await()`.
 
 ### WorkflowNode hierarchy
 
-`WorkflowNode` is a sealed interface — the common ancestor for everything the executor produces. Java 25 sealed types allow exhaustive `switch` pattern matching over the three permitted subtypes.
+`WorkflowNode` is a sealed interface — the common ancestor for everything the executor produces. Java 25 sealed types allow exhaustive `switch` pattern matching over the four permitted subtypes.
 
 ```java
-public sealed interface WorkflowNode permits DagRun, StepsRun, PodRun {
+public sealed interface WorkflowNode permits DagRun, StepsRun, PodRun, UninitializedNode {
     String name();
     boolean succeeded();
     boolean failed();
     boolean skipped();
     boolean running();
     boolean pending();
+    void skip();
 }
 ```
 
@@ -145,42 +146,37 @@ public final class PodRun implements WorkflowNode {
 }
 ```
 
-`PodRun` instances are created only via package-private factory methods (`pending()`, `running()`, `skipped()`, `completed()`). The constructor is private.
-
-### LiveWorkflowRun
+`PodRun` is constructed at tree-build time with `PENDING` status. All mutable fields (`status`, `exitCode`, `logs`, etc.) are `volatile` and updated in-place as the pod runs — no new instance is created.
 
 ```java
-public final class LiveWorkflowRun {
-    // Returns an immutable snapshot of the current execution state.
-    // Can be called any number of times while the workflow is running.
-    public WorkflowRun snapshot();
-
-    // Blocks until the workflow completes and returns the final result.
-    public WorkflowRun await() throws Exception;
-
-    public boolean isDone();
+public final class UninitializedNode implements WorkflowNode {
+    // Non-null once the node has been expanded by executeAsync().
+    public WorkflowNode resolved();
 }
 ```
 
-`snapshot()` reconstructs the full `WorkflowNode` tree on every call, merging the template structure with the live `podStates` map. Tasks not yet started appear as `PENDING`.
+`UninitializedNode` marks a recursion boundary — a point where the template is known but the subtree cannot be built without infinite recursion (e.g. a template that calls itself). It reports `pending()` until `executeAsync()` is called, at which point it builds one more level of the tree, sets `resolved`, and delegates execution. `WorkflowSummary` and other tree walkers follow `resolved()` transparently.
 
 ### WorkflowRun
 
 ```java
 public final class WorkflowRun {
+    boolean isDone();
     boolean succeeded();
     boolean failed();
     boolean running();
     boolean pending();
 
+    // Blocks until the workflow completes and returns this.
+    WorkflowRun await() throws Exception;
+
     // Returns the top-level node (the entrypoint template). 
     // Navigate into it via DagRun/StepsRun.get() for specific steps/tasks.
     WorkflowNode entrypoint();
-    Collection<WorkflowNode> nodes();
 }
 ```
 
-Flat lookup by step name is not supported; navigate the hierarchy explicitly.
+`WorkflowRun` holds the live tree directly — the same `WorkflowNode` instances are mutated in-place as execution progresses. `executeAsync()` returns the `WorkflowRun` immediately; callers can observe live state by reading the tree at any time. Flat lookup by step name is not supported; navigate the hierarchy explicitly.
 
 ### Example usage
 
@@ -220,9 +216,10 @@ assertThat(flipCoin.outputResult(), anyOf(is(Optional.of("heads")), is(Optional.
 
 // pattern matching for unknown node type
 switch (coinflip.get("heads")) {
-    case PodRun pod -> assertThat(pod.skipped(), is(false));
-    case DagRun dag -> fail("unexpected dag");
-    case StepsRun steps -> fail("unexpected steps");
+    case PodRun pod              -> assertThat(pod.skipped(), is(false));
+    case DagRun dag              -> fail("unexpected dag");
+    case StepsRun steps          -> fail("unexpected steps");
+    case UninitializedNode unin  -> fail("unexpected uninitialized node");
 }
 ```
 
@@ -313,6 +310,7 @@ argo-junit/
 │   │   ├── expression/           ← substitution + when evaluator
 │   │   ├── artifact/             ← ArtifactDriver interface + impls
 │   │   ├── executor/             ← execution engine, Testcontainer lifecycle
+│   │   ├── util/                 ← WorkflowSummary and other test utilities
 │   │   └── kwok/                 ← kwok Testcontainer setup, fabric8 wiring
 │   └── test/
 │       ├── java/eu/vnagy/argotools/
@@ -338,10 +336,12 @@ Requires: model (YAML parsing), expression substitution, `when` evaluation, `con
 Goal: parallel DAG execution with observable in-progress state.
 
 - `dag` template executor: topological sort (Kahn's algorithm), `CompletableFuture` chaining per task for true parallelism
-- `executeAsync()` returning `LiveWorkflowRun`; `snapshot()` for in-progress state observation
-- `running()` / `pending()` on all `WorkflowNode` types; `PodRun.Status` enum
-- `{{workflow.parameters.X}}` substitution; script source substitution fixed
+- Unified live tree: `executeAsync()` returns `WorkflowRun` immediately; the same `WorkflowNode` instances are mutated in-place — no snapshot needed
+- `UninitializedNode` as a recursion boundary: tree is pre-built eagerly at parse time, stopping at self-referencing template calls to avoid infinite construction; each boundary expands one level when its `executeAsync()` is called
+- `running()` / `pending()` / `skip()` on all `WorkflowNode` types; `PodRun.Status` enum
+- `{{workflow.parameters.X}}` substitution; script source substitution fixed; argument passing from `dag` tasks and `steps` to child templates
 - Test: `LiveWorkflowRunTest` — embedded JDK HTTP server as a release trigger, deterministic observation of four simultaneous states (SUCCEEDED, RUNNING, PENDING, PENDING) mid-run
+- Test: `CountdownLoopTest` — self-recursive `steps` template with a countdown counter; verifies that the tree expands level-by-level during execution and that `UninitializedNode.resolved()` is navigable after completion
 
 ### Phase 3+ — To be defined
 

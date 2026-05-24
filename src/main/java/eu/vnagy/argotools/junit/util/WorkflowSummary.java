@@ -1,4 +1,6 @@
-package eu.vnagy.argotools.junit.executor;
+package eu.vnagy.argotools.junit.util;
+
+import eu.vnagy.argotools.junit.executor.*;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -45,6 +47,7 @@ public final class WorkflowSummary {
     private static List<WorkflowNode> children(WorkflowNode node) {
         if (node instanceof StepsRun s) return new ArrayList<>(s.steps());
         if (node instanceof DagRun d)   return new ArrayList<>(d.tasks());
+        if (node instanceof UninitializedNode u && u.resolved() != null) return children(u.resolved());
         return List.of();
     }
 

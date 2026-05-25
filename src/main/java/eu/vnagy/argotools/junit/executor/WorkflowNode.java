@@ -25,8 +25,7 @@ public sealed interface WorkflowNode permits DagRun, PodRun, StepsRun, Uninitial
     boolean omitted();
     /** Infrastructure/execution error (not a non-zero exit code). */
     boolean errored();
-    /** Always false — daemon tasks are not supported. */
-    default boolean daemoned() { return false; }
+    boolean daemoned();
     boolean running();
     boolean pending();
     /** Mark as skipped: {@code when} condition was false. */

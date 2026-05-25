@@ -98,12 +98,24 @@ public final class DagRun implements WorkflowNode {
                 Map<String, String> resolvedArgs = new LinkedHashMap<>();
                 spec.args().forEach((k, v) -> resolvedArgs.put(k, ctx.substitute(v, inputParams)));
                 return tasks.get(spec.name()).executeAsync(ctx, resolvedArgs);
-            }, ctx.threadPool);
+            }, ctx.threadPool)
+            .thenApply(result -> {
+                if (result instanceof PodRun pod) {
+                    pod.ip().ifPresent(ip -> {
+                        log.debug("Dag '{}': task '{}' daemon ip='{}'", name, spec.name(), ip);
+                        ctx.taskIps.put(spec.name(), ip);
+                    });
+                }
+                return result;
+            });
 
             futures.put(spec.name(), taskFuture);
         }
 
         return CompletableFuture.allOf(futures.values().toArray(new CompletableFuture[0]))
+                .whenComplete((_, _) -> tasks.values().forEach(task -> {
+                    if (task instanceof PodRun pod) pod.stopIfDaemon();
+                }))
                 .thenApply(_ -> {
                     log.debug("Dag '{}': all tasks completed", name);
                     return (WorkflowNode) this;
@@ -134,6 +146,7 @@ public final class DagRun implements WorkflowNode {
     }
     @Override public void skip()        { this.skipped = true; }
     @Override public void omit()        { this.omitted = true; }
+    @Override public boolean daemoned()  { return false; }
     @Override public boolean skipped()  { return skipped; }
     @Override public boolean omitted()  { return omitted; }
     @Override public boolean running() {

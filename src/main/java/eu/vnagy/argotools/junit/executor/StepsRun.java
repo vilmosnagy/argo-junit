@@ -97,6 +97,10 @@ public final class StepsRun implements WorkflowNode {
                                                 log.debug("Step '{}': outputs.result='{}'", pod.name(), r);
                                                 ctx.stepOutputResults.put(spec.name(), r);
                                             });
+                                            pod.ip().ifPresent(ip -> {
+                                                log.debug("Step '{}': daemon ip='{}'", pod.name(), ip);
+                                                ctx.stepIps.put(spec.name(), ip);
+                                            });
                                         }
                                         return result;
                                     }));
@@ -106,10 +110,14 @@ public final class StepsRun implements WorkflowNode {
             }, ctx.threadPool);
         }
 
-        return chain.thenApply(_ -> {
-            log.debug("Steps '{}': all groups completed", name);
-            return (WorkflowNode) this;
-        });
+        return chain
+                .whenComplete((_, _) -> steps.values().forEach(step -> {
+                    if (step instanceof PodRun pod) pod.stopIfDaemon();
+                }))
+                .thenApply(_ -> {
+                    log.debug("Steps '{}': all groups completed", name);
+                    return (WorkflowNode) this;
+                });
     }
 
     public WorkflowNode get(String stepName) {
@@ -134,6 +142,7 @@ public final class StepsRun implements WorkflowNode {
         if (skipped || omitted) return false;
         return steps.values().stream().anyMatch(WorkflowNode::errored);
     }
+    @Override public boolean daemoned()  { return false; }
     @Override public void skip()        { this.skipped = true; }
     @Override public void omit()        { this.omitted = true; }
     @Override public boolean skipped()  { return skipped; }

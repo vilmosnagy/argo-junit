@@ -1,5 +1,6 @@
 package eu.vnagy.argotools.junit.executor;
 
+import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Probe;
 import eu.vnagy.argotools.junit.model.Template;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -8,6 +9,7 @@ import org.testcontainers.containers.output.OutputFrame;
 import org.testcontainers.containers.startupcheck.OneShotStartupCheckStrategy;
 import org.testcontainers.containers.startupcheck.StartupCheckStrategy;
 import org.testcontainers.containers.wait.strategy.AbstractWaitStrategy;
+import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.utility.MountableFile;
 
@@ -20,26 +22,29 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 
 public final class PodRun implements WorkflowNode {
 
     private static final Logger log = LoggerFactory.getLogger(PodRun.class);
 
-    public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, ERRORED, SKIPPED, OMITTED }
+    public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, ERRORED, SKIPPED, OMITTED, DAEMONED }
 
     private final String name;
     // Plan fields — parsed from template at construction time
     private final String image;
     private final List<String> command;
     private final String scriptSource;
+    private final boolean daemon;
+    private final IoK8sApiCoreV1Probe readinessProbe;
     // Mutable execution state — volatile for visibility across threads
     private volatile Status status;
     private volatile int exitCode;
     private volatile String logs;
     private volatile String outputResult;
+    private volatile String ip;
     private volatile GenericContainer<?> container;
     private volatile Duration duration;
+    private volatile boolean daemonStopped;
 
     /** Plan constructor: parses the template once so executeAsync never touches argo model classes. */
     PodRun(String name, Template template) {
@@ -52,6 +57,8 @@ public final class PodRun implements WorkflowNode {
             this.image = script.getImage();
             this.command = List.copyOf(base);
             this.scriptSource = script.getSource();
+            this.daemon = false;
+            this.readinessProbe = null;
         } else {
             var cont = template.getContainer();
             List<String> cmd = cont.getCommand() != null
@@ -60,33 +67,17 @@ public final class PodRun implements WorkflowNode {
             this.image = cont.getImage();
             this.command = List.copyOf(cmd);
             this.scriptSource = null;
+            this.daemon = Boolean.TRUE.equals(template.getDaemon());
+            this.readinessProbe = this.daemon ? cont.getReadinessProbe() : null;
         }
         this.status = Status.PENDING;
         this.exitCode = 0;
         this.logs = "";
         this.outputResult = null;
+        this.ip = null;
         this.container = null;
         this.duration = Duration.ZERO;
     }
-
-    private PodRun(String name, Status status) {
-        this.name = name;
-        this.image = null;
-        this.command = List.of();
-        this.scriptSource = null;
-        this.status = status;
-        this.exitCode = status == Status.FAILED ? 1 : 0;
-        this.logs = "";
-        this.outputResult = null;
-        this.container = null;
-        this.duration = Duration.ZERO;
-    }
-
-    static PodRun succeeded(String name) { return new PodRun(name, Status.SUCCEEDED); }
-    static PodRun failed(String name)    { return new PodRun(name, Status.FAILED); }
-    static PodRun errored(String name)   { return new PodRun(name, Status.ERRORED); }
-    static PodRun skipped(String name)   { return new PodRun(name, Status.SKIPPED); }
-    static PodRun omitted(String name)   { return new PodRun(name, Status.OMITTED); }
 
     @Override public void skip() { this.status = Status.SKIPPED; }
     @Override public void omit() { this.status = Status.OMITTED; }
@@ -112,22 +103,43 @@ public final class PodRun implements WorkflowNode {
         log.debug("Pod '{}': starting image='{}' command={}", name, resolvedImage, resolvedCommand);
 
         @SuppressWarnings("resource")
-        GenericContainer<?> cont = new GenericContainer<>(DockerImageName.parse(resolvedImage))
-                .withCommand(resolvedCommand.toArray(String[]::new))
-                .withStartupCheckStrategy(new OneShotStartupCheckStrategy() {
-                    // Accept any exit code — we read the actual code from container state
-                    @Override
-                    public StartupCheckStrategy.StartupStatus checkStartupState(
-                            com.github.dockerjava.api.DockerClient dockerClient, String containerId) {
-                        var state = getCurrentState(dockerClient, containerId);
-                        return Boolean.TRUE.equals(state.getRunning())
-                                ? StartupCheckStrategy.StartupStatus.NOT_YET_KNOWN
-                                : StartupCheckStrategy.StartupStatus.SUCCESSFUL;
-                    }
-                }.withTimeout(Duration.ofMinutes(10)))
-                .waitingFor(new AbstractWaitStrategy() {
+        GenericContainer<?> cont = new GenericContainer<>(DockerImageName.parse(resolvedImage));
+        if (!resolvedCommand.isEmpty()) {
+            cont.withCommand(resolvedCommand.toArray(String[]::new));
+        }
+
+        if (daemon) {
+            if (readinessProbe != null && readinessProbe.getHttpGet() != null) {
+                var httpGet = readinessProbe.getHttpGet();
+                int probePort = Integer.parseInt(httpGet.getPort());
+                String probePath = httpGet.getPath() != null ? httpGet.getPath() : "/";
+                cont.addExposedPort(probePort);
+                // Accept any 2xx — matches Kubernetes readiness probe semantics (e.g. InfluxDB /ping → 204)
+                cont.waitingFor(Wait.forHttp(probePath)
+                        .forPort(probePort)
+                        .forStatusCodeMatching(code -> code >= 200 && code < 300)
+                        .withStartupTimeout(Duration.ofMinutes(5)));
+            } else {
+                cont.waitingFor(new AbstractWaitStrategy() {
                     @Override protected void waitUntilReady() {}
                 });
+            }
+        } else {
+            cont.withStartupCheckStrategy(new OneShotStartupCheckStrategy() {
+                        // Accept any exit code — we read the actual code from container state
+                        @Override
+                        public StartupCheckStrategy.StartupStatus checkStartupState(
+                                com.github.dockerjava.api.DockerClient dockerClient, String containerId) {
+                            var state = getCurrentState(dockerClient, containerId);
+                            return Boolean.TRUE.equals(state.getRunning())
+                                    ? StartupCheckStrategy.StartupStatus.NOT_YET_KNOWN
+                                    : StartupCheckStrategy.StartupStatus.SUCCESSFUL;
+                        }
+                    }.withTimeout(Duration.ofMinutes(10)))
+                    .waitingFor(new AbstractWaitStrategy() {
+                        @Override protected void waitUntilReady() {}
+                    });
+        }
 
         if (resolvedScript != null) {
             log.debug("Pod '{}': copying script source to /tmp/script", name);
@@ -141,29 +153,57 @@ public final class PodRun implements WorkflowNode {
         cont.start();
         Duration elapsed = Duration.between(start, Instant.now());
 
-        int code = cont.getCurrentContainerInfo().getState().getExitCodeLong().intValue();
-        String podLogs = cont.getLogs();
-        String stdout = cont.getLogs(OutputFrame.OutputType.STDOUT).trim();
+        if (daemon) {
+            String containerIp = cont.getCurrentContainerInfo().getNetworkSettings().getIpAddress();
+            if ((containerIp == null || containerIp.isEmpty())) {
+                var networks = cont.getCurrentContainerInfo().getNetworkSettings().getNetworks();
+                if (networks != null && !networks.isEmpty()) {
+                    containerIp = networks.values().iterator().next().getIpAddress();
+                }
+            }
+            log.debug("Daemon pod '{}': ready ip={} duration={}s", name, containerIp, elapsed.getSeconds());
+            this.ip = containerIp;
+            this.container = cont;
+            this.duration = elapsed;
+            this.status = Status.DAEMONED;
+        } else {
+            int code = cont.getCurrentContainerInfo().getState().getExitCodeLong().intValue();
+            String podLogs = cont.getLogs();
+            String stdout = cont.getLogs(OutputFrame.OutputType.STDOUT).trim();
 
-        log.debug("Pod '{}': finished exitCode={} duration={}s", name, code, elapsed.getSeconds());
-        if (scriptSource != null) {
-            log.debug("Pod '{}': stdout='{}'", name, stdout);
+            log.debug("Pod '{}': finished exitCode={} duration={}s", name, code, elapsed.getSeconds());
+            if (scriptSource != null) {
+                log.debug("Pod '{}': stdout='{}'", name, stdout);
+            }
+
+            this.exitCode = code;
+            this.logs = podLogs;
+            this.outputResult = scriptSource != null ? stdout : null;
+            this.container = cont;
+            this.duration = elapsed;
+            this.status = code == 0 ? Status.SUCCEEDED : Status.FAILED;
         }
+    }
 
-        this.exitCode = code;
-        this.logs = podLogs;
-        this.outputResult = scriptSource != null ? stdout : null;
-        this.container = cont;
-        this.duration = elapsed;
-        this.status = code == 0 ? Status.SUCCEEDED : Status.FAILED;
+    /** Stops the container if this is a daemon pod. No-op otherwise. */
+    void stopIfDaemon() {
+        if (!daemon || container == null) return;
+        try {
+            container.stop();
+            log.debug("Daemon pod '{}': stopped", name);
+        } catch (Exception e) {
+            log.warn("Daemon pod '{}': failed to stop container", name, e);
+        }
+        this.daemonStopped = true;
     }
 
     @Override public String name()       { return name; }
-    @Override public boolean succeeded() { return status == Status.SUCCEEDED; }
+    @Override public boolean succeeded() { return status == Status.SUCCEEDED || status == Status.DAEMONED; }
     @Override public boolean failed()    { return status == Status.FAILED; }
     @Override public boolean errored()   { return status == Status.ERRORED; }
     @Override public boolean skipped()   { return status == Status.SKIPPED; }
     @Override public boolean omitted()   { return status == Status.OMITTED; }
+    @Override public boolean daemoned()  { return status == Status.DAEMONED; }
     @Override public boolean running()   { return status == Status.RUNNING; }
     @Override public boolean pending()   { return status == Status.PENDING; }
 
@@ -171,6 +211,8 @@ public final class PodRun implements WorkflowNode {
     public int exitCode()                  { return exitCode; }
     public String logs()                   { return logs; }
     public Optional<String> outputResult() { return Optional.ofNullable(outputResult); }
+    public Optional<String> ip()           { return Optional.ofNullable(ip); }
+    public boolean isDaemonStopped()       { return daemonStopped; }
     /** The stopped container. Logs and state remain accessible until Ryuk removes it. */
     public GenericContainer<?> container() { return container; }
     public Duration duration()             { return duration; }

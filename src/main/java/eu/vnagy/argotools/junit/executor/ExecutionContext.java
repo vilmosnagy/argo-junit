@@ -18,6 +18,10 @@ final class ExecutionContext {
 
     private static final Pattern STEP_OUTPUT_RESULT =
             Pattern.compile("\\{\\{steps\\.([^.}]+)\\.outputs\\.result\\}\\}");
+    private static final Pattern STEP_IP =
+            Pattern.compile("\\{\\{steps\\.([^.}]+)\\.ip\\}\\}");
+    private static final Pattern TASK_IP =
+            Pattern.compile("\\{\\{tasks\\.([^.}]+)\\.ip\\}\\}");
     private static final Pattern INPUTS_PARAMETER =
             Pattern.compile("\\{\\{inputs\\.parameters\\.([^}]+)\\}\\}");
     private static final Pattern WORKFLOW_PARAMETER =
@@ -25,6 +29,8 @@ final class ExecutionContext {
 
     final Map<String, Template> templateMap;
     final ConcurrentHashMap<String, String> stepOutputResults;
+    final ConcurrentHashMap<String, String> stepIps;
+    final ConcurrentHashMap<String, String> taskIps;
     final Map<String, String> workflowParams;
     final ExecutorService threadPool;
 
@@ -34,10 +40,14 @@ final class ExecutionContext {
         this.workflowParams = workflowParams;
         this.threadPool = threadPool;
         this.stepOutputResults = new ConcurrentHashMap<>();
+        this.stepIps = new ConcurrentHashMap<>();
+        this.taskIps = new ConcurrentHashMap<>();
     }
 
     String substitute(String expr, Map<String, String> inputParams) {
         String result = applyPattern(expr, STEP_OUTPUT_RESULT, stepOutputResults);
+        result = applyPattern(result, STEP_IP, stepIps);
+        result = applyPattern(result, TASK_IP, taskIps);
         result = applyPattern(result, INPUTS_PARAMETER, inputParams);
         result = applyPattern(result, WORKFLOW_PARAMETER, workflowParams);
         if (!result.equals(expr)) {

@@ -36,6 +36,7 @@ public final class UninitializedNode implements WorkflowNode {
     @Override public boolean errored()   { return resolved != null && resolved.errored(); }
     @Override public boolean skipped()   { return skipped || (resolved != null && resolved.skipped()); }
     @Override public boolean omitted()   { return omitted || (resolved != null && resolved.omitted()); }
+    @Override public boolean daemoned()  { return resolved != null && resolved.daemoned(); }
     @Override public boolean running()   { return resolved != null && resolved.running(); }
     @Override public boolean pending()   { return !skipped && !omitted && resolved == null; }
 

@@ -1,0 +1,68 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: daemon-dag-e2e-
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: message
+        value: "hello"
+      - name: release_port
+        value: "8080"
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: layer2
+            template: with-daemon
+          - name: wait
+            template: wait-for-release
+            depends: layer2
+
+    - name: with-daemon
+      dag:
+        tasks:
+          - name: md5-server
+            template: md5-server
+          - name: curl-md5
+            template: curl-md5
+            depends: md5-server
+            arguments:
+              parameters:
+                - name: server-ip
+                  value: "{{tasks.md5-server.ip}}"
+
+    - name: md5-server
+      daemon: true
+      container:
+        image: python:alpine3.23
+        command:
+          - python
+          - "-c"
+          - "import hashlib,http.server; m=hashlib.md5(b'{{workflow.parameters.message}}').hexdigest(); H=type('H',(http.server.BaseHTTPRequestHandler,),{'do_GET':lambda s:(s.send_response(200),s.send_header('Content-Length',str(len(m))),s.end_headers(),s.wfile.write(m.encode())),'log_message':lambda s,*a:None}); http.server.HTTPServer(('',8080),H).serve_forever()"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 2
+          timeoutSeconds: 1
+
+    - name: curl-md5
+      inputs:
+        parameters:
+          - name: server-ip
+      container:
+        image: curlimages/curl:latest
+        command:
+          - curl
+          - "-s"
+          - "http://{{inputs.parameters.server-ip}}:8080/"
+
+    - name: wait-for-release
+      container:
+        image: curlimages/curl:latest
+        command:
+          - sh
+          - "-c"
+          - "until curl -sf http://host.docker.internal:{{workflow.parameters.release_port}}/ready; do sleep 1; done"

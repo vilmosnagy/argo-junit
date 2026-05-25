@@ -26,7 +26,7 @@ import static org.hamcrest.Matchers.is;
  *   should-execute-2   dep: B || C                          → SUCCEEDED
  *                      B=true → true
  *
- *   should-not-execute dep: B && C                          → SKIPPED
+ *   should-not-execute dep: B && C                          → OMITTED
  *                      C=false → false
  *
  *   should-execute-3   dep: should-execute-2.Succeeded || should-not-execute → SUCCEEDED
@@ -49,7 +49,7 @@ class DagEnhancedDependsTest {
         assertThat("C",                dag.get("C").failed(),                  is(true));
         assertThat("should-execute-1", dag.get("should-execute-1").succeeded(), is(true));
         assertThat("should-execute-2", dag.get("should-execute-2").succeeded(), is(true));
-        assertThat("should-not-execute", dag.get("should-not-execute").skipped(), is(true));
+        assertThat("should-not-execute", dag.get("should-not-execute").omitted(), is(true));
         assertThat("should-execute-3", dag.get("should-execute-3").succeeded(), is(true));
 
         System.out.println(WorkflowSummary.format(run));

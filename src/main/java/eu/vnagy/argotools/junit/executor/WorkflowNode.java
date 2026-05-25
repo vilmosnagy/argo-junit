@@ -19,9 +19,19 @@ public sealed interface WorkflowNode permits DagRun, PodRun, StepsRun, Uninitial
     String name();
     boolean succeeded();
     boolean failed();
+    /** Task's {@code when} condition was false. */
     boolean skipped();
+    /** Task's {@code depends} condition was false. */
+    boolean omitted();
+    /** Infrastructure/execution error (not a non-zero exit code). */
+    boolean errored();
+    /** Always false — daemon tasks are not supported. */
+    default boolean daemoned() { return false; }
     boolean running();
     boolean pending();
+    /** Mark as skipped: {@code when} condition was false. */
     void skip();
+    /** Mark as omitted: {@code depends} condition was false. */
+    void omit();
     CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams);
 }

@@ -54,21 +54,25 @@ public final class WorkflowSummary {
     private static String icon(WorkflowNode node) {
         if (node.succeeded()) return "✔";
         if (node.failed())    return "✗";
+        if (node.errored())   return "✗";
         if (node.skipped())   return "○";
+        if (node.omitted())   return "○";
         if (node.running())   return "◷";
         if (node.pending())   return "·";
         return "?";
     }
 
     private static String duration(WorkflowNode node) {
-        if (node instanceof PodRun pod && !pod.skipped()) {
+        if (node instanceof PodRun pod && !pod.skipped() && !pod.omitted()) {
             return formatDuration(pod.duration());
         }
         return "";
     }
 
     private static String message(WorkflowNode node) {
+        if (node.omitted()) return "omitted";
         if (node.skipped()) return "skipped";
+        if (node.errored()) return "error";
         if (node instanceof PodRun pod && pod.failed()) return "exit code " + pod.exitCode();
         return "";
     }

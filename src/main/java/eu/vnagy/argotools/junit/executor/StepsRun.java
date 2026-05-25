@@ -18,6 +18,7 @@ public final class StepsRun implements WorkflowNode {
     private final List<List<StepSpec>> groups;
     private final Map<String, WorkflowNode> steps;
     private volatile boolean skipped;
+    private volatile boolean omitted;
 
     /**
      * Plan constructor: validates template references, builds child plan nodes eagerly up to the
@@ -122,21 +123,27 @@ public final class StepsRun implements WorkflowNode {
     @Override public String name() { return name; }
 
     @Override public boolean succeeded() {
-        if (skipped) return false;
-        return steps.values().stream().allMatch(n -> n.succeeded() || n.skipped());
+        if (skipped || omitted) return false;
+        return steps.values().stream().allMatch(n -> n.succeeded() || n.skipped() || n.omitted());
     }
     @Override public boolean failed() {
-        if (skipped) return false;
+        if (skipped || omitted) return false;
         return steps.values().stream().anyMatch(WorkflowNode::failed);
     }
-    @Override public void skip()       { this.skipped = true; }
-    @Override public boolean skipped() { return skipped; }
+    @Override public boolean errored() {
+        if (skipped || omitted) return false;
+        return steps.values().stream().anyMatch(WorkflowNode::errored);
+    }
+    @Override public void skip()        { this.skipped = true; }
+    @Override public void omit()        { this.omitted = true; }
+    @Override public boolean skipped()  { return skipped; }
+    @Override public boolean omitted()  { return omitted; }
     @Override public boolean running() {
-        if (skipped) return false;
+        if (skipped || omitted) return false;
         return steps.values().stream().anyMatch(WorkflowNode::running);
     }
     @Override public boolean pending() {
-        if (skipped) return false;
+        if (skipped || omitted) return false;
         return steps.values().stream().allMatch(WorkflowNode::pending);
     }
 

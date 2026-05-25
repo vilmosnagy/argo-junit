@@ -49,7 +49,9 @@ class DependsExpressionTest {
 
     private static WorkflowNode succeeded(String name) { return PodRun.succeeded(name); }
     private static WorkflowNode failed(String name)    { return PodRun.failed(name); }
+    private static WorkflowNode errored(String name)   { return PodRun.errored(name); }
     private static WorkflowNode skipped(String name)   { return PodRun.skipped(name); }
+    private static WorkflowNode omitted(String name)   { return PodRun.omitted(name); }
 
     @Test
     void evaluateNullOrBlankAlwaysTrue() {
@@ -59,10 +61,13 @@ class DependsExpressionTest {
     }
 
     @Test
-    void evaluateBareNameRequiresSuccess() {
+    void evaluateBareNameMeansSucceededOrSkipped() {
+        // bare name = (task.Succeeded || task.Skipped || task.Daemoned)
         assertThat(new DependsExpression("A").evaluate(Map.of("A", succeeded("A"))), is(true));
+        assertThat(new DependsExpression("A").evaluate(Map.of("A", skipped("A"))),   is(true));
         assertThat(new DependsExpression("A").evaluate(Map.of("A", failed("A"))),    is(false));
-        assertThat(new DependsExpression("A").evaluate(Map.of("A", skipped("A"))),   is(false));
+        assertThat(new DependsExpression("A").evaluate(Map.of("A", errored("A"))),   is(false));
+        assertThat(new DependsExpression("A").evaluate(Map.of("A", omitted("A"))),   is(false));
     }
 
     @Test
@@ -81,6 +86,40 @@ class DependsExpressionTest {
     void evaluateQualifiedSkipped() {
         assertThat(new DependsExpression("A.Skipped").evaluate(Map.of("A", skipped("A"))),   is(true));
         assertThat(new DependsExpression("A.Skipped").evaluate(Map.of("A", succeeded("A"))), is(false));
+    }
+
+    @Test
+    void evaluateQualifiedErrored() {
+        assertThat(new DependsExpression("A.Errored").evaluate(Map.of("A", errored("A"))),   is(true));
+        assertThat(new DependsExpression("A.Errored").evaluate(Map.of("A", failed("A"))),    is(false));
+        assertThat(new DependsExpression("A.Errored").evaluate(Map.of("A", succeeded("A"))), is(false));
+    }
+
+    @Test
+    void evaluateQualifiedOmitted() {
+        assertThat(new DependsExpression("A.Omitted").evaluate(Map.of("A", omitted("A"))),   is(true));
+        assertThat(new DependsExpression("A.Omitted").evaluate(Map.of("A", skipped("A"))),   is(false));
+        assertThat(new DependsExpression("A.Omitted").evaluate(Map.of("A", succeeded("A"))), is(false));
+    }
+
+    @Test
+    void evaluateQualifiedDaemoned() {
+        // Daemoned is never true in this implementation
+        assertThat(new DependsExpression("A.Daemoned").evaluate(Map.of("A", succeeded("A"))), is(false));
+    }
+
+    @Test
+    void evaluateQualifiedAnySucceeded() {
+        // AnySucceeded is equivalent to Succeeded for non-withItems tasks
+        assertThat(new DependsExpression("A.AnySucceeded").evaluate(Map.of("A", succeeded("A"))), is(true));
+        assertThat(new DependsExpression("A.AnySucceeded").evaluate(Map.of("A", failed("A"))),    is(false));
+    }
+
+    @Test
+    void evaluateQualifiedAllFailed() {
+        // AllFailed is equivalent to Failed for non-withItems tasks
+        assertThat(new DependsExpression("A.AllFailed").evaluate(Map.of("A", failed("A"))),    is(true));
+        assertThat(new DependsExpression("A.AllFailed").evaluate(Map.of("A", succeeded("A"))), is(false));
     }
 
     @Test
@@ -117,12 +156,19 @@ class DependsExpressionTest {
     }
 
     @Test
-    void evaluateSkippedNodeIsNotSucceeded() {
-        // should-execute-2.Succeeded || should-not-execute (bare = must succeed)
-        // se2=succeeded, sne=skipped → true || false = true
+    void evaluateSkippedNodeSatisfiesBareDependent() {
+        // bare name includes Skipped, so a when-skipped node satisfies downstream bare deps
         assertThat(new DependsExpression("should-execute-2.Succeeded || should-not-execute").evaluate(
                 Map.of("should-execute-2", succeeded("should-execute-2"),
                        "should-not-execute", skipped("should-not-execute"))), is(true));
+    }
+
+    @Test
+    void evaluateOmittedNodeDoesNotSatisfyBareDependent() {
+        // Omitted (depends-false) does NOT satisfy a bare dep — only Succeeded/Skipped/Daemoned do
+        assertThat(new DependsExpression("should-execute-2.Succeeded || should-not-execute").evaluate(
+                Map.of("should-execute-2", failed("should-execute-2"),
+                       "should-not-execute", omitted("should-not-execute"))), is(false));
     }
 
     @Test

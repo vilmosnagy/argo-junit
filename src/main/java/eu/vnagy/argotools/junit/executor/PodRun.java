@@ -26,7 +26,7 @@ public final class PodRun implements WorkflowNode {
 
     private static final Logger log = LoggerFactory.getLogger(PodRun.class);
 
-    public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, SKIPPED }
+    public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, ERRORED, SKIPPED, OMITTED }
 
     private final String name;
     // Plan fields — parsed from template at construction time
@@ -84,20 +84,23 @@ public final class PodRun implements WorkflowNode {
 
     static PodRun succeeded(String name) { return new PodRun(name, Status.SUCCEEDED); }
     static PodRun failed(String name)    { return new PodRun(name, Status.FAILED); }
+    static PodRun errored(String name)   { return new PodRun(name, Status.ERRORED); }
     static PodRun skipped(String name)   { return new PodRun(name, Status.SKIPPED); }
+    static PodRun omitted(String name)   { return new PodRun(name, Status.OMITTED); }
 
-    @Override
-    public void skip() { this.status = Status.SKIPPED; }
+    @Override public void skip() { this.status = Status.SKIPPED; }
+    @Override public void omit() { this.status = Status.OMITTED; }
 
     @Override
     public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 run(ctx, inputParams);
-                return (WorkflowNode) this;
             } catch (Exception e) {
-                throw new CompletionException(e);
+                log.error("Pod '{}': execution error", name, e);
+                this.status = Status.ERRORED;
             }
+            return (WorkflowNode) this;
         }, ctx.threadPool);
     }
 
@@ -158,7 +161,9 @@ public final class PodRun implements WorkflowNode {
     @Override public String name()       { return name; }
     @Override public boolean succeeded() { return status == Status.SUCCEEDED; }
     @Override public boolean failed()    { return status == Status.FAILED; }
+    @Override public boolean errored()   { return status == Status.ERRORED; }
     @Override public boolean skipped()   { return status == Status.SKIPPED; }
+    @Override public boolean omitted()   { return status == Status.OMITTED; }
     @Override public boolean running()   { return status == Status.RUNNING; }
     @Override public boolean pending()   { return status == Status.PENDING; }
 

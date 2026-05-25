@@ -19,6 +19,7 @@ public final class DagRun implements WorkflowNode {
     private final List<DagTaskSpec> specs;
     private final Map<String, WorkflowNode> tasks;
     private volatile boolean skipped;
+    private volatile boolean omitted;
 
     /**
      * Plan constructor: validates structure, builds child plan nodes eagerly up to the first
@@ -89,8 +90,8 @@ public final class DagRun implements WorkflowNode {
                 for (String dep : spec.depends().taskNames()) depResults.put(dep, futures.get(dep).join());
 
                 if (!spec.depends().evaluate(depResults)) {
-                    log.debug("Dag '{}': task '{}' skipped by depends expression", name, spec.name());
-                    tasks.get(spec.name()).skip();
+                    log.debug("Dag '{}': task '{}' omitted by depends expression", name, spec.name());
+                    tasks.get(spec.name()).omit();
                     return CompletableFuture.completedFuture(tasks.get(spec.name()));
                 }
 
@@ -120,21 +121,27 @@ public final class DagRun implements WorkflowNode {
     @Override public String name() { return name; }
 
     @Override public boolean succeeded() {
-        if (skipped) return false;
-        return tasks.values().stream().allMatch(n -> n.succeeded() || n.skipped());
+        if (skipped || omitted) return false;
+        return tasks.values().stream().allMatch(n -> n.succeeded() || n.skipped() || n.omitted());
     }
     @Override public boolean failed() {
-        if (skipped) return false;
+        if (skipped || omitted) return false;
         return tasks.values().stream().anyMatch(WorkflowNode::failed);
     }
-    @Override public void skip()       { this.skipped = true; }
-    @Override public boolean skipped() { return skipped; }
+    @Override public boolean errored() {
+        if (skipped || omitted) return false;
+        return tasks.values().stream().anyMatch(WorkflowNode::errored);
+    }
+    @Override public void skip()        { this.skipped = true; }
+    @Override public void omit()        { this.omitted = true; }
+    @Override public boolean skipped()  { return skipped; }
+    @Override public boolean omitted()  { return omitted; }
     @Override public boolean running() {
-        if (skipped) return false;
+        if (skipped || omitted) return false;
         return tasks.values().stream().anyMatch(WorkflowNode::running);
     }
     @Override public boolean pending() {
-        if (skipped) return false;
+        if (skipped || omitted) return false;
         return tasks.values().stream().allMatch(WorkflowNode::pending);
     }
 

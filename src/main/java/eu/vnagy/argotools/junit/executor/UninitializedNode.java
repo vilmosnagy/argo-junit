@@ -20,6 +20,7 @@ public final class UninitializedNode implements WorkflowNode {
     private final Template template;
     private volatile WorkflowNode resolved;
     private volatile boolean skipped;
+    private volatile boolean omitted;
 
     UninitializedNode(String name, Template template) {
         this.name = name;
@@ -32,12 +33,14 @@ public final class UninitializedNode implements WorkflowNode {
     @Override public String name()       { return name; }
     @Override public boolean succeeded() { return resolved != null && resolved.succeeded(); }
     @Override public boolean failed()    { return resolved != null && resolved.failed(); }
+    @Override public boolean errored()   { return resolved != null && resolved.errored(); }
     @Override public boolean skipped()   { return skipped || (resolved != null && resolved.skipped()); }
+    @Override public boolean omitted()   { return omitted || (resolved != null && resolved.omitted()); }
     @Override public boolean running()   { return resolved != null && resolved.running(); }
-    @Override public boolean pending()   { return !skipped && resolved == null; }
+    @Override public boolean pending()   { return !skipped && !omitted && resolved == null; }
 
-    @Override
-    public void skip() { this.skipped = true; }
+    @Override public void skip() { this.skipped = true; }
+    @Override public void omit() { this.omitted = true; }
 
     @Override
     public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {

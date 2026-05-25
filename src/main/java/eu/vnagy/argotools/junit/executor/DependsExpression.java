@@ -14,9 +14,10 @@ import java.util.regex.Pattern;
  * set and {@link #evaluate(Map)} to decide whether the task should run.
  *
  * <p>Syntax: task names joined by {@code &&}, {@code ||}, optionally with {@code !} and
- * parentheses. A bare task name means the task must have succeeded. A qualified name
- * ({@code Task.Succeeded}, {@code Task.Failed}, {@code Task.Skipped}) tests a specific
- * terminal state.
+ * parentheses. A bare task name is equivalent to {@code (task.Succeeded || task.Skipped || task.Daemoned)}.
+ * A qualified name tests a specific terminal state: {@code Succeeded}, {@code Failed},
+ * {@code Errored}, {@code Skipped}, {@code Omitted}, {@code Daemoned},
+ * {@code AnySucceeded}, {@code AllFailed}.
  *
  * <p>Examples:
  * <pre>
@@ -29,9 +30,10 @@ import java.util.regex.Pattern;
 public final class DependsExpression {
 
     private static final Pattern TOKEN =
-            Pattern.compile("([A-Za-z0-9][A-Za-z0-9_-]*)(?:\\.(Succeeded|Failed|Skipped))?");
+            Pattern.compile("([A-Za-z0-9][A-Za-z0-9_-]*)(?:\\.(Succeeded|Failed|Errored|Skipped|Omitted|Daemoned|AnySucceeded|AllFailed))?");
 
-    private static final Set<String> STATUS_QUALIFIERS = Set.of("Succeeded", "Failed", "Skipped");
+    private static final Set<String> STATUS_QUALIFIERS =
+            Set.of("Succeeded", "Failed", "Errored", "Skipped", "Omitted", "Daemoned", "AnySucceeded", "AllFailed");
 
     private final String raw;
     private final Set<String> names;
@@ -67,15 +69,21 @@ public final class DependsExpression {
             boolean val;
             if (qualifier != null) {
                 val = node != null && switch (qualifier) {
-                    case "Succeeded" -> node.succeeded();
-                    case "Failed"    -> node.failed();
-                    case "Skipped"   -> node.skipped();
-                    default          -> false;
+                    case "Succeeded"    -> node.succeeded();
+                    case "Failed"       -> node.failed();
+                    case "Errored"      -> node.errored();
+                    case "Skipped"      -> node.skipped();
+                    case "Omitted"      -> node.omitted();
+                    case "Daemoned"     -> node.daemoned();
+                    case "AnySucceeded" -> node.succeeded();   // withItems not supported; equivalent for single tasks
+                    case "AllFailed"    -> node.failed();      // withItems not supported; equivalent for single tasks
+                    default             -> false;
                 };
             } else {
-                val = node != null && node.succeeded();
+                // bare name: equivalent to (task.Succeeded || task.Skipped || task.Daemoned)
+                val = node != null && (node.succeeded() || node.skipped() || node.daemoned());
             }
-            m.appendReplacement(sb, val ? "true" : "false");
+            m.appendReplacement(sb, Boolean.toString(val));
         }
         m.appendTail(sb);
 

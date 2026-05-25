@@ -58,6 +58,7 @@ public final class StepsRun implements WorkflowNode {
 
     @Override
     public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
+        ExecutionContext localCtx = ctx.childScope();
         log.debug("Steps '{}': {} group(s)", name, groups.size());
 
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
@@ -74,8 +75,8 @@ public final class StepsRun implements WorkflowNode {
                     WorkflowNode node = steps.get(spec.name());
 
                     if (spec.when() != null) {
-                        String substituted = ctx.substitute(spec.when(), inputParams);
-                        boolean run = ctx.evaluateWhen(substituted);
+                        String substituted = localCtx.substitute(spec.when(), inputParams);
+                        boolean run = localCtx.evaluateWhen(substituted);
                         log.debug("Step '{}': when='{}' → '{}' → {}", spec.name(), spec.when(),
                                 substituted, run ? "run" : "skip");
                         if (!run) {
@@ -86,20 +87,20 @@ public final class StepsRun implements WorkflowNode {
                     }
 
                     Map<String, String> resolvedArgs = new LinkedHashMap<>();
-                    spec.args().forEach((k, v) -> resolvedArgs.put(k, ctx.substitute(v, inputParams)));
+                    spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
 
                     log.debug("Step '{}': running args={}", spec.name(), resolvedArgs);
                     groupFutures.add(
-                            node.executeAsync(ctx, resolvedArgs)
+                            node.executeAsync(localCtx, resolvedArgs)
                                     .thenApply(result -> {
                                         if (result instanceof PodRun pod) {
                                             pod.outputResult().ifPresent(r -> {
                                                 log.debug("Step '{}': outputs.result='{}'", pod.name(), r);
-                                                ctx.stepOutputResults.put(spec.name(), r);
+                                                localCtx.stepOutputResults.put(spec.name(), r);
                                             });
                                             pod.ip().ifPresent(ip -> {
                                                 log.debug("Step '{}': daemon ip='{}'", pod.name(), ip);
-                                                ctx.stepIps.put(spec.name(), ip);
+                                                localCtx.stepIps.put(spec.name(), ip);
                                             });
                                         }
                                         return result;
@@ -107,7 +108,7 @@ public final class StepsRun implements WorkflowNode {
                 }
 
                 return CompletableFuture.allOf(groupFutures.toArray(new CompletableFuture[0]));
-            }, ctx.threadPool);
+            }, localCtx.threadPool);
         }
 
         return chain

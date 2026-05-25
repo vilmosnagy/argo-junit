@@ -1,0 +1,88 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: scope-isolation-
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: gate1_port
+        value: "8080"
+      - name: gate2_port
+        value: "8081"
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: child1
+            template: child1-steps
+          - name: child2
+            template: child2-steps
+
+    # child1: echo-pod → consumer1 → gate1 → consumer2
+    # gate1 is released only after child2/echo-pod (same name!) has already written
+    # "completely-different" into the shared context — exposes the scope collision.
+    - name: child1-steps
+      steps:
+        - - name: echo-pod
+            template: echo-script
+            arguments:
+              parameters:
+                - name: message
+                  value: "hello-from-child1"
+        - - name: consumer1
+            template: echo-script
+            arguments:
+              parameters:
+                - name: message
+                  value: "{{steps.echo-pod.outputs.result}}"
+        - - name: gate1
+            template: wait-for-gate
+            arguments:
+              parameters:
+                - name: port
+                  value: "{{workflow.parameters.gate1_port}}"
+        - - name: consumer2
+            template: echo-script
+            arguments:
+              parameters:
+                - name: message
+                  value: "{{steps.echo-pod.outputs.result}}"
+
+    # child2: gate2 → echo-pod (same step name as child1/echo-pod, different output)
+    # gate2 is released once child1/echo-pod finishes so that child2/echo-pod runs
+    # while child1 is still mid-flight, maximising the collision window.
+    - name: child2-steps
+      steps:
+        - - name: gate2
+            template: wait-for-gate
+            arguments:
+              parameters:
+                - name: port
+                  value: "{{workflow.parameters.gate2_port}}"
+        - - name: echo-pod
+            template: echo-script
+            arguments:
+              parameters:
+                - name: message
+                  value: "completely-different"
+
+    - name: echo-script
+      inputs:
+        parameters:
+          - name: message
+      script:
+        image: alpine:latest
+        command: [sh]
+        source: "echo {{inputs.parameters.message}}"
+
+    - name: wait-for-gate
+      inputs:
+        parameters:
+          - name: port
+      container:
+        image: curlimages/curl:latest
+        command:
+          - sh
+          - "-c"
+          - "until curl -sf http://host.docker.internal:{{inputs.parameters.port}}/ready; do sleep 1; done"

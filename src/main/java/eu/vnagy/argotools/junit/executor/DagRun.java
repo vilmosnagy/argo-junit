@@ -71,6 +71,7 @@ public final class DagRun implements WorkflowNode {
 
     @Override
     public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
+        ExecutionContext localCtx = ctx.childScope();
         log.debug("Dag '{}': {} task(s) in topological order: {}", name, specs.size(),
                 specs.stream().map(DagTaskSpec::name).collect(Collectors.joining(", ")));
 
@@ -96,14 +97,14 @@ public final class DagRun implements WorkflowNode {
                 }
 
                 Map<String, String> resolvedArgs = new LinkedHashMap<>();
-                spec.args().forEach((k, v) -> resolvedArgs.put(k, ctx.substitute(v, inputParams)));
-                return tasks.get(spec.name()).executeAsync(ctx, resolvedArgs);
-            }, ctx.threadPool)
+                spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
+                return tasks.get(spec.name()).executeAsync(localCtx, resolvedArgs);
+            }, localCtx.threadPool)
             .thenApply(result -> {
                 if (result instanceof PodRun pod) {
                     pod.ip().ifPresent(ip -> {
                         log.debug("Dag '{}': task '{}' daemon ip='{}'", name, spec.name(), ip);
-                        ctx.taskIps.put(spec.name(), ip);
+                        localCtx.taskIps.put(spec.name(), ip);
                     });
                 }
                 return result;

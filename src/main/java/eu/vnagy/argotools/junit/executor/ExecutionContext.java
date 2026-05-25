@@ -44,6 +44,10 @@ final class ExecutionContext {
         this.taskIps = new ConcurrentHashMap<>();
     }
 
+    ExecutionContext childScope() {
+        return new ExecutionContext(templateMap, workflowParams, threadPool);
+    }
+
     String substitute(String expr, Map<String, String> inputParams) {
         String result = applyPattern(expr, STEP_OUTPUT_RESULT, stepOutputResults);
         result = applyPattern(result, STEP_IP, stepIps);

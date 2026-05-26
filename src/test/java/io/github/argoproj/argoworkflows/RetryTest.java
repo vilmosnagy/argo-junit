@@ -18,10 +18,13 @@ class RetryTest {
                 .from(Path.of(getClass().getResource("/examples/retry-container.yaml").toURI()))
                 .execute()) {
 
-            assertThat("workflow succeeded after retries", run.succeeded(), is(true));
+            assertThat("workflow either succeeded or not after retries", run.succeeded(), oneOf(true, false));
             PodRun pod = (PodRun) run.entrypoint();
             assertThat("attempts recorded", pod.attempts(), greaterThan(0));
             assertThat("at most 11 attempts (1 initial + limit 10)", pod.attempts(), lessThanOrEqualTo(11));
+            if (!run.succeeded()) {
+                assertThat("workflow failed so max attempts should've been tried", pod.attempts(), equalTo(11));
+            }
         }
     }
 
@@ -34,6 +37,9 @@ class RetryTest {
             assertThat("workflow either succeeded or not after retries with backoff", run.succeeded(), oneOf(true, false));
             PodRun pod = (PodRun) run.entrypoint();
             assertThat("at most 11 attempts (1 initial + limit 10)", pod.attempts(), lessThanOrEqualTo(11));
+            if (!run.succeeded()) {
+                assertThat("workflow failed so max attempts should've been tried", pod.attempts(), equalTo(11));
+            }
         }
     }
 

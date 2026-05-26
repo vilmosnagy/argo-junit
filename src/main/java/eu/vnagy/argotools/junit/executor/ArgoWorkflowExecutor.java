@@ -5,10 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Artifact;
+import eu.vnagy.argotools.junit.model.DAGTask;
 import eu.vnagy.argotools.junit.model.Parameter;
 import eu.vnagy.argotools.junit.model.Template;
 import eu.vnagy.argotools.junit.model.Workflow;
+import eu.vnagy.argotools.junit.model.WorkflowStep;
+import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.dsl.base.ResourceDefinitionContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.Network;
@@ -20,9 +24,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -64,6 +66,14 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
 
     private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory())
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+    private static final ObjectMapper JSON = new ObjectMapper()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+    public static final ResourceDefinitionContext WORKFLOW_TEMPLATE_CTX =
+            new ResourceDefinitionContext.Builder()
+                    .withGroup("argoproj.io").withVersion("v1alpha1").withKind("WorkflowTemplate")
+                    .withNamespaced(true).build();
 
     private final Workflow workflow;
     private String namespace = "default";
@@ -243,6 +253,10 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         }
         log.debug("Templates: {}", templateMap.keySet());
 
+        if (k8sClient != null) {
+            templateMap.putAll(resolveTemplateRefs(Collections.unmodifiableMap(templateMap)));
+        }
+
         Template entrypointTemplate = templateMap.get(entrypointName);
 
         ExecutorService threadPool = Executors.newCachedThreadPool(r -> {
@@ -318,6 +332,73 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
             network = ownedNetwork;
         }
         return network;
+    }
+
+    /**
+     * Fetches all WorkflowTemplates referenced (directly or transitively) by templateRef fields
+     * in {@code workflowTemplates} and returns a new map containing the original entries plus
+     * one composite-key entry per fetched template.
+     *
+     * <p>Each fetched template is stored under {@code "WorkflowTemplateName/templateName"}.
+     * Plain-name (local sibling) references within a WorkflowTemplate are resolved at
+     * construction time via the {@code owningWt} parameter threaded through
+     * {@link WorkflowNode#from} — no plain-name entries are written here.
+     */
+    private Map<String, Template> resolveTemplateRefs(Map<String, Template> workflowTemplates) {
+        Map<String, Template> result = new LinkedHashMap<>();
+        Set<String> fetchedWTs = new java.util.LinkedHashSet<>();
+        Queue<String> toFetch = new ArrayDeque<>();
+
+        for (Template t : workflowTemplates.values()) {
+            collectTemplateRefs(t, fetchedWTs, toFetch);
+        }
+
+        while (!toFetch.isEmpty()) {
+            String wtName = toFetch.poll();
+            log.debug("Fetching WorkflowTemplate '{}'", wtName);
+
+            GenericKubernetesResource wt = k8sClient
+                    .genericKubernetesResources(WORKFLOW_TEMPLATE_CTX)
+                    .inNamespace(namespace).withName(wtName).get();
+            if (wt == null) throw new IllegalStateException(
+                    "templateRef requires WorkflowTemplate '" + wtName + "' but it was not found"
+                    + " in namespace '" + namespace + "'");
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> spec = (Map<String, Object>) wt.getAdditionalProperties().get("spec");
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> rawTemplates =
+                    spec == null ? null : (List<Map<String, Object>>) spec.get("templates");
+            if (rawTemplates == null) continue;
+
+            for (Map<String, Object> raw : rawTemplates) {
+                Template t = JSON.convertValue(raw, Template.class);
+                result.put(wtName + "/" + t.getName(), t);
+                collectTemplateRefs(t, fetchedWTs, toFetch);
+            }
+        }
+        return result;
+    }
+
+    private static void collectTemplateRefs(Template t, Set<String> seen, Queue<String> toFetch) {
+        if (t.getSteps() != null) {
+            for (List<WorkflowStep> group : t.getSteps()) {
+                for (WorkflowStep step : group) {
+                    if (step.getTemplateRef() != null) {
+                        String wtName = step.getTemplateRef().getName();
+                        if (seen.add(wtName)) toFetch.add(wtName);
+                    }
+                }
+            }
+        }
+        if (t.getDag() != null && t.getDag().getTasks() != null) {
+            for (DAGTask task : t.getDag().getTasks()) {
+                if (task.getTemplateRef() != null) {
+                    String wtName = task.getTemplateRef().getName();
+                    if (seen.add(wtName)) toFetch.add(wtName);
+                }
+            }
+        }
     }
 
     private Map<String, Path> downloadWorkflowArtifacts(Path tmpDir) {

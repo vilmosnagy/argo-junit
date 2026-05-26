@@ -33,7 +33,8 @@ public final class StepsRun implements WorkflowNode {
      * @param constructing the set of template names currently being constructed up the call stack,
      *                     used to detect recursion and stop expansion
      */
-    StepsRun(String name, Template template, Map<String, Template> templateMap, Set<String> constructing) {
+    StepsRun(String name, Template template, Map<String, Template> templateMap, Set<String> constructing,
+             String owningWt) {
         this.name = name;
         Set<String> nowConstructing = new HashSet<>(constructing);
         nowConstructing.add(template.getName());
@@ -43,17 +44,14 @@ public final class StepsRun implements WorkflowNode {
         for (List<WorkflowStep> group : template.getSteps()) {
             List<StepSpec> specGroup = new ArrayList<>();
             for (WorkflowStep step : group) {
-                Template stepTemplate = templateMap.get(step.getTemplate());
-                if (stepTemplate == null) {
-                    throw new IllegalArgumentException(
-                            "Steps '" + name + "': step '" + step.getName()
-                            + "' references unknown template '" + step.getTemplate() + "'");
-                }
+                Template stepTemplate = resolveStepTemplate(step, templateMap, name, owningWt);
+                String childOwner = step.getTemplate() != null ? owningWt
+                        : step.getTemplateRef() != null ? step.getTemplateRef().getName() : null;
                 specGroup.add(new StepSpec(step.getName(), step.getWhen(),
                         parseArgs(step), parseArtifactArgs(step)));
                 WorkflowNode child = nowConstructing.contains(stepTemplate.getName())
-                        ? new UninitializedNode(step.getName(), stepTemplate)
-                        : WorkflowNode.from(step.getName(), stepTemplate, templateMap, nowConstructing);
+                        ? new UninitializedNode(step.getName(), stepTemplate, childOwner)
+                        : WorkflowNode.from(step.getName(), stepTemplate, templateMap, nowConstructing, childOwner);
                 initialSteps.put(step.getName(), child);
             }
             builtGroups.add(List.copyOf(specGroup));
@@ -190,6 +188,33 @@ public final class StepsRun implements WorkflowNode {
     @Override public boolean pending() {
         if (skipped || omitted) return false;
         return steps.values().stream().allMatch(WorkflowNode::pending);
+    }
+
+    private static Template resolveStepTemplate(WorkflowStep step, Map<String, Template> map,
+                                                String stepsName, String owningWt) {
+        if (step.getTemplate() != null) {
+            if (owningWt != null) {
+                Template t = map.get(owningWt + "/" + step.getTemplate());
+                if (t != null) return t;
+            }
+            Template t = map.get(step.getTemplate());
+            if (t == null) throw new IllegalArgumentException(
+                    "Steps '" + stepsName + "': step '" + step.getName()
+                    + "' references unknown template '" + step.getTemplate() + "'");
+            return t;
+        }
+        if (step.getTemplateRef() != null) {
+            String key = step.getTemplateRef().getName() + "/" + step.getTemplateRef().getTemplate();
+            Template t = map.get(key);
+            if (t == null) throw new IllegalArgumentException(
+                    "Steps '" + stepsName + "': step '" + step.getName()
+                    + "' references unresolved WorkflowTemplate '"
+                    + step.getTemplateRef().getName() + "/" + step.getTemplateRef().getTemplate()
+                    + "' — call getKubernetesClient() before execute()");
+            return t;
+        }
+        throw new IllegalArgumentException(
+                "Steps '" + stepsName + "': step '" + step.getName() + "' has neither template nor templateRef");
     }
 
     private static Map<String, String> parseArgs(WorkflowStep step) {

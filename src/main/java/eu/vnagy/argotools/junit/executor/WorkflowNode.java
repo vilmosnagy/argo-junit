@@ -10,9 +10,18 @@ public sealed interface WorkflowNode permits DagRun, PodRun, StepsRun, Uninitial
 
     static WorkflowNode from(String name, Template template,
                              Map<String, Template> templateMap, Set<String> constructing) {
-        if (template.getDag() != null) return new DagRun(name, template, templateMap, constructing);
-        if (template.getSteps() != null && !template.getSteps().isEmpty())
-            return new StepsRun(name, template, templateMap, constructing);
+        return from(name, template, templateMap, constructing, null);
+    }
+
+    static WorkflowNode from(String name, Template template,
+                             Map<String, Template> templateMap, Set<String> constructing,
+                             String owningWt) {
+        if (template.getDag() != null) {
+            return new DagRun(name, template, templateMap, constructing, owningWt);
+        }
+        if (template.getSteps() != null && !template.getSteps().isEmpty()) {
+            return new StepsRun(name, template, templateMap, constructing, owningWt);
+        }
         return new PodRun(name, template);
     }
 

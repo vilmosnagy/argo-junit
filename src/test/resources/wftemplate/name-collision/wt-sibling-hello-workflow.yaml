@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: wt-sibling-hello-
+spec:
+  entrypoint: run-both
+  templates:
+  - name: run-both
+    steps:
+    - - name: call-a
+        templateRef:
+          name: wftemplate-a
+          template: wftemplate-a-entry
+      - name: call-b
+        templateRef:
+          name: wftemplate-b
+          template: wftemplate-b-entry

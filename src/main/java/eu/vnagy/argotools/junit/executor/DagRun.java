@@ -34,7 +34,8 @@ public final class DagRun implements WorkflowNode {
      * @param constructing the set of template names currently being constructed up the call stack,
      *                     used to detect recursion and stop expansion
      */
-    DagRun(String name, Template template, Map<String, Template> templateMap, Set<String> constructing) {
+    DagRun(String name, Template template, Map<String, Template> templateMap, Set<String> constructing,
+           String owningWt) {
         this.name = name;
         List<DAGTask> dagTasks = template.getDag().getTasks();
 
@@ -49,10 +50,19 @@ public final class DagRun implements WorkflowNode {
                             + "' depends on unknown task '" + dep + "'");
                 }
             }
-            if (t.getTemplate() != null && !templateMap.containsKey(t.getTemplate())) {
-                throw new IllegalArgumentException(
+            if (t.getTemplate() != null) {
+                boolean found = (owningWt != null && templateMap.containsKey(owningWt + "/" + t.getTemplate()))
+                        || templateMap.containsKey(t.getTemplate());
+                if (!found) throw new IllegalArgumentException(
                         "DAG '" + name + "': task '" + t.getName()
                         + "' references unknown template '" + t.getTemplate() + "'");
+            }
+            if (t.getTemplateRef() != null) {
+                String key = t.getTemplateRef().getName() + "/" + t.getTemplateRef().getTemplate();
+                if (!templateMap.containsKey(key)) throw new IllegalArgumentException(
+                        "DAG '" + name + "': task '" + t.getName()
+                        + "' references unresolved WorkflowTemplate '" + key
+                        + "' — call getKubernetesClient() before execute()");
             }
         }
 
@@ -64,10 +74,12 @@ public final class DagRun implements WorkflowNode {
         for (DAGTask t : topologicalSort(dagTasks)) {
             builtSpecs.add(new DagTaskSpec(t.getName(),
                     new DependsExpression(t.getDepends()), resolveArgs(t), resolveArtifactArgs(t)));
-            Template taskTemplate = templateMap.get(t.getTemplate());
+            Template taskTemplate = resolveTaskTemplate(t, templateMap, owningWt);
+            String childOwner = t.getTemplate() != null ? owningWt
+                    : t.getTemplateRef() != null ? t.getTemplateRef().getName() : null;
             WorkflowNode child = (taskTemplate == null || nowConstructing.contains(taskTemplate.getName()))
-                    ? new UninitializedNode(t.getName(), taskTemplate)
-                    : WorkflowNode.from(t.getName(), taskTemplate, templateMap, nowConstructing);
+                    ? new UninitializedNode(t.getName(), taskTemplate, childOwner)
+                    : WorkflowNode.from(t.getName(), taskTemplate, templateMap, nowConstructing, childOwner);
             initialTasks.put(t.getName(), child);
         }
         this.specs = Collections.unmodifiableList(builtSpecs);
@@ -190,6 +202,19 @@ public final class DagRun implements WorkflowNode {
     @Override public boolean pending() {
         if (skipped || omitted) return false;
         return tasks.values().stream().allMatch(WorkflowNode::pending);
+    }
+
+    private static Template resolveTaskTemplate(DAGTask task, Map<String, Template> map, String owningWt) {
+        if (task.getTemplate() != null) {
+            if (owningWt != null) {
+                Template t = map.get(owningWt + "/" + task.getTemplate());
+                if (t != null) return t;
+            }
+            return map.get(task.getTemplate());
+        }
+        if (task.getTemplateRef() != null)
+            return map.get(task.getTemplateRef().getName() + "/" + task.getTemplateRef().getTemplate());
+        return null;
     }
 
     private static Map<String, String> resolveArgs(DAGTask task) {

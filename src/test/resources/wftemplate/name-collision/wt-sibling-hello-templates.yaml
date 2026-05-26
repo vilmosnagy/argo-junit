@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wftemplate-a
+spec:
+  templates:
+  - name: hello-world
+    container:
+      image: busybox
+      command: [echo]
+      args: ["hello from A"]
+  - name: wftemplate-a-entry
+    dag:
+      tasks:
+      - name: say-hello
+        template: hello-world
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wftemplate-b
+spec:
+  templates:
+  - name: hello-world
+    container:
+      image: busybox
+      command: [echo]
+      args: ["hello from B"]
+  - name: wftemplate-b-entry
+    dag:
+      tasks:
+      - name: say-hello
+        template: hello-world

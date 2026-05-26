@@ -18,13 +18,19 @@ public final class UninitializedNode implements WorkflowNode {
 
     private final String name;
     private final Template template;
+    private final String owningWt;
     private volatile WorkflowNode resolved;
     private volatile boolean skipped;
     private volatile boolean omitted;
 
     UninitializedNode(String name, Template template) {
+        this(name, template, null);
+    }
+
+    UninitializedNode(String name, Template template, String owningWt) {
         this.name = name;
         this.template = template;
+        this.owningWt = owningWt;
     }
 
     /** The expanded plan node, or {@code null} if not yet executed. */
@@ -46,7 +52,7 @@ public final class UninitializedNode implements WorkflowNode {
     @Override
     public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
         log.debug("UninitializedNode '{}': expanding template '{}'", name, template.getName());
-        WorkflowNode planNode = WorkflowNode.from(name, template, ctx.templateMap, Set.of(template.getName()));
+        WorkflowNode planNode = WorkflowNode.from(name, template, ctx.templateMap, Set.of(template.getName()), owningWt);
         this.resolved = planNode;
         return planNode.executeAsync(ctx, inputParams);
     }

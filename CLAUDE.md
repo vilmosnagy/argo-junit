@@ -16,6 +16,15 @@ When constructing shell commands, resolve any environment variables once (e.g. r
 
 Only create commits when a human explicitly asks for one.
 
+## Test packages
+
+New tests go in the package that matches their nature:
+
+ - **`io.github.argoproj.argoworkflows`** — for tests that run upstream Argo example workflows sourced from `src/test/resources/examples` (the submodule symlink). No custom infrastructure, no custom fixtures.
+ - **`eu.vnagy.argotools.junit`** — for tests of executor features, edge cases, gate-controlled scenarios, or anything that requires custom YAML fixtures. Custom fixtures go under `src/test/resources/` (not `examples/`).
+ - **`eu.vnagy.argotools.junit.executor`** — only when package-private access to executor internals is required.
+ - **`eu.vnagy.argotools.junit.testutil`** — shared test infrastructure (`WorkflowReleaseGate`, `RetryOutcomeGate`). No `@Test` methods here.
+
 ## Test resources
 
 `src/test/resources/examples` is a symlink to the `argo-workflows` submodule. Never create or modify files inside it. Put custom test fixtures directly under `src/test/resources/` (e.g. `src/test/resources/my-fixture.yaml`).

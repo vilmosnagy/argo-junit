@@ -1,4 +1,4 @@
-package eu.vnagy.argotools.junit;
+package io.github.argoproj.argoworkflows;
 
 import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import eu.vnagy.argotools.junit.executor.DagRun;

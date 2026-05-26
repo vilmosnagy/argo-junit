@@ -1,6 +1,8 @@
 package eu.vnagy.argotools.junit.executor;
 
+import eu.vnagy.argotools.junit.model.Backoff;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Probe;
+import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +38,8 @@ public final class PodRun implements WorkflowNode {
 
     public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, ERRORED, SKIPPED, OMITTED, DAEMONED }
 
+    private enum RetryPolicy { ON_FAILURE, ON_ERROR, ALWAYS }
+
     private record ArtifactSpec(String name, String path) {}
 
     private final String name;
@@ -47,6 +51,13 @@ public final class PodRun implements WorkflowNode {
     private final IoK8sApiCoreV1Probe readinessProbe;
     private final List<ArtifactSpec> outputArtifactSpecs;
     private final List<ArtifactSpec> inputArtifactDecls;
+    // Retry plan fields
+    private final int retryLimit;       // -1 = infinite
+    private final RetryPolicy retryPolicy;
+    private final Duration backoffDuration;
+    private final double backoffFactor;
+    private final Duration backoffCap;
+    private final Duration backoffMaxDuration;
     // Mutable execution state — volatile for visibility across threads
     private volatile Status status;
     private volatile int exitCode;
@@ -56,6 +67,7 @@ public final class PodRun implements WorkflowNode {
     private volatile GenericContainer<?> container;
     private volatile Duration duration;
     private volatile boolean daemonStopped;
+    private volatile int attempts;
     private volatile Map<String, Path> collectedArtifacts = Map.of();
 
     /** Plan constructor: parses the template once so executeAsync never touches argo model classes. */
@@ -100,6 +112,35 @@ public final class PodRun implements WorkflowNode {
         }
         this.inputArtifactDecls = List.copyOf(ins);
 
+        // Retry strategy
+        RetryStrategy rs = template.getRetryStrategy();
+        if (rs == null) {
+            this.retryLimit = 0;
+            this.retryPolicy = RetryPolicy.ON_FAILURE;
+            this.backoffDuration = Duration.ZERO;
+            this.backoffFactor = 1.0;
+            this.backoffCap = Duration.ZERO;
+            this.backoffMaxDuration = Duration.ZERO;
+        } else {
+            this.retryLimit = rs.getLimit() != null ? Integer.parseInt(rs.getLimit()) : -1;
+            String pol = rs.getRetryPolicy();
+            this.retryPolicy = "Always".equalsIgnoreCase(pol) ? RetryPolicy.ALWAYS
+                    : "OnError".equalsIgnoreCase(pol) ? RetryPolicy.ON_ERROR
+                    : RetryPolicy.ON_FAILURE;
+            Backoff b = rs.getBackoff();
+            if (b != null) {
+                this.backoffDuration = parseDuration(b.getDuration());
+                this.backoffFactor = b.getFactor() != null ? Double.parseDouble(b.getFactor()) : 1.0;
+                this.backoffCap = b.getCap() != null ? parseDuration(b.getCap()) : Duration.ZERO;
+                this.backoffMaxDuration = b.getMaxDuration() != null ? parseDuration(b.getMaxDuration()) : Duration.ZERO;
+            } else {
+                this.backoffDuration = Duration.ZERO;
+                this.backoffFactor = 1.0;
+                this.backoffCap = Duration.ZERO;
+                this.backoffMaxDuration = Duration.ZERO;
+            }
+        }
+
         this.status = Status.PENDING;
         this.exitCode = 0;
         this.logs = "";
@@ -107,6 +148,7 @@ public final class PodRun implements WorkflowNode {
         this.ip = null;
         this.container = null;
         this.duration = Duration.ZERO;
+        this.attempts = 0;
     }
 
     @Override public void skip() { this.status = Status.SKIPPED; }
@@ -132,6 +174,68 @@ public final class PodRun implements WorkflowNode {
 
         log.debug("Pod '{}': starting image='{}' command={}", name, resolvedImage, resolvedCommand);
 
+        this.attempts = 0;
+        Duration currentBackoff = backoffDuration;
+        Instant retryStart = Instant.now();
+
+        while (true) {
+            this.attempts++;
+            runAttempt(ctx, resolvedImage, resolvedCommand, resolvedScript);
+
+            boolean shouldRetry = switch (retryPolicy) {
+                case ON_FAILURE -> status == Status.FAILED;
+                case ON_ERROR   -> status == Status.ERRORED;
+                case ALWAYS     -> status == Status.FAILED || status == Status.ERRORED;
+            };
+
+            if (!shouldRetry) break;
+            if (retryLimit >= 0 && this.attempts > retryLimit) {
+                log.debug("Pod '{}': retry limit {} exhausted after {} attempt(s)", name, retryLimit, attempts);
+                break;
+            }
+            if (!backoffMaxDuration.isZero()
+                    && Duration.between(retryStart, Instant.now()).compareTo(backoffMaxDuration) >= 0) {
+                log.debug("Pod '{}': maxDuration exceeded, stopping retries", name);
+                break;
+            }
+
+            log.debug("Pod '{}': attempt {} {} — retrying (backoff={}ms)",
+                    name, attempts, status, currentBackoff.toMillis());
+
+            if (!currentBackoff.isZero()) {
+                Thread.sleep(currentBackoff.toMillis());
+                long nextMs = (long) (currentBackoff.toMillis() * backoffFactor);
+                Duration next = Duration.ofMillis(nextMs);
+                if (!backoffCap.isZero() && next.compareTo(backoffCap) > 0) next = backoffCap;
+                currentBackoff = next;
+            }
+        }
+
+        // Collect output artifacts from the final run
+        if (!daemon && this.container != null) {
+            Set<String> requested = ctx.requestedOutputArtifacts;
+            List<ArtifactSpec> specsToCollect = requested == null ? outputArtifactSpecs
+                    : outputArtifactSpecs.stream().filter(s -> requested.contains(s.name())).toList();
+            if (!specsToCollect.isEmpty()) {
+                Map<String, Path> collected = new LinkedHashMap<>();
+                for (ArtifactSpec spec : specsToCollect) {
+                    try {
+                        Path artifact = extractArtifact(this.container, spec, ctx.tmpDir);
+                        collected.put(spec.name(), artifact);
+                        log.debug("Pod '{}': collected output artifact '{}' from '{}' → '{}'",
+                                name, spec.name(), spec.path(), artifact);
+                    } catch (Exception e) {
+                        log.warn("Pod '{}': failed to collect output artifact '{}' from '{}'",
+                                name, spec.name(), spec.path(), e);
+                    }
+                }
+                this.collectedArtifacts = Map.copyOf(collected);
+            }
+        }
+    }
+
+    private void runAttempt(ExecutionContext ctx, String resolvedImage,
+                            List<String> resolvedCommand, String resolvedScript) throws Exception {
         @SuppressWarnings("resource")
         GenericContainer<?> cont = new GenericContainer<>(DockerImageName.parse(resolvedImage));
         if (!resolvedCommand.isEmpty()) {
@@ -210,7 +314,8 @@ public final class PodRun implements WorkflowNode {
             String podLogs = cont.getLogs();
             String stdout = cont.getLogs(OutputFrame.OutputType.STDOUT).trim();
 
-            log.debug("Pod '{}': finished exitCode={} duration={}s", name, code, elapsed.getSeconds());
+            log.debug("Pod '{}': attempt {} finished exitCode={} duration={}s",
+                    name, attempts, code, elapsed.getSeconds());
             if (scriptSource != null) {
                 log.debug("Pod '{}': stdout='{}'", name, stdout);
             }
@@ -221,26 +326,6 @@ public final class PodRun implements WorkflowNode {
             this.container = cont;
             this.duration = elapsed;
             this.status = code == 0 ? Status.SUCCEEDED : Status.FAILED;
-
-            // Collect only output artifacts requested by downstream steps/tasks
-            Set<String> requested = ctx.requestedOutputArtifacts;
-            List<ArtifactSpec> specsToCollect = requested == null ? outputArtifactSpecs
-                    : outputArtifactSpecs.stream().filter(s -> requested.contains(s.name())).toList();
-            if (!specsToCollect.isEmpty()) {
-                Map<String, Path> collected = new LinkedHashMap<>();
-                for (ArtifactSpec spec : specsToCollect) {
-                    try {
-                        Path artifact = extractArtifact(cont, spec, ctx.tmpDir);
-                        collected.put(spec.name(), artifact);
-                        log.debug("Pod '{}': collected output artifact '{}' from '{}' → '{}'",
-                                name, spec.name(), spec.path(), artifact);
-                    } catch (Exception e) {
-                        log.warn("Pod '{}': failed to collect output artifact '{}' from '{}'",
-                                name, spec.name(), spec.path(), e);
-                    }
-                }
-                this.collectedArtifacts = Map.copyOf(collected);
-            }
         }
     }
 
@@ -272,6 +357,22 @@ public final class PodRun implements WorkflowNode {
         }
     }
 
+    private static Duration parseDuration(String s) {
+        if (s == null || s.isBlank()) return Duration.ZERO;
+        s = s.trim();
+        try { return Duration.ofSeconds(Long.parseLong(s)); } catch (NumberFormatException ignored) {}
+        if (s.endsWith("s")) {
+            try { return Duration.ofSeconds(Long.parseLong(s.substring(0, s.length() - 1))); } catch (NumberFormatException ignored) {}
+        }
+        if (s.endsWith("m")) {
+            try { return Duration.ofMinutes(Long.parseLong(s.substring(0, s.length() - 1))); } catch (NumberFormatException ignored) {}
+        }
+        if (s.endsWith("h")) {
+            try { return Duration.ofHours(Long.parseLong(s.substring(0, s.length() - 1))); } catch (NumberFormatException ignored) {}
+        }
+        throw new IllegalArgumentException("Cannot parse Argo duration: '" + s + "'");
+    }
+
     /** Stops the container if this is a daemon pod. No-op otherwise. */
     void stopIfDaemon() {
         if (!daemon || container == null) return;
@@ -300,6 +401,7 @@ public final class PodRun implements WorkflowNode {
     public Optional<String> outputResult()   { return Optional.ofNullable(outputResult); }
     public Optional<String> ip()             { return Optional.ofNullable(ip); }
     public boolean isDaemonStopped()         { return daemonStopped; }
+    public int attempts()                    { return attempts; }
     public Map<String, Path> collectedArtifacts() { return collectedArtifacts; }
     /** The stopped container. Logs and state remain accessible until Ryuk removes it. */
     public GenericContainer<?> container() { return container; }

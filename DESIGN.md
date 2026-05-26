@@ -40,25 +40,22 @@ ArgoWorkflowExecutor (Java)
         Inter-step passing via host temp directory (no external store)
 ```
 
-## Planned Feature Set
+## Feature Set
 
-Features will be added incrementally per the build order below.
-
-### In scope
-
-| Feature | Notes |
-|---|---|
-| `container` templates | Full support |
-| `script` templates | stdout → `outputs.result` |
-| `steps` templates | Sequential groups, parallel within group |
-| `dag` templates | Dependency-based execution |
-| `inputs.parameters` / `outputs.parameters` | Full parameter passing |
-| `outputs.result` | Script stdout capture |
-| `when` conditionals | Evaluated after expression substitution |
-| `retryStrategy` | Re-run container up to N times on non-zero exit |
-| Inter-step artifact passing | Via host temp directory |
-| Explicit artifact locations (`s3:`, `gcs:`, `azure:`) | ArtifactDriver impls; credentials from kwok Secrets |
-| `WorkflowTemplate` resolution | Via kwok CRD lookup |
+| Feature | Status | Notes |
+|---|---|---|
+| `container` templates | ✓ | Full support |
+| `script` templates | ✓ | stdout → `outputs.result` |
+| `steps` templates | ✓ | Sequential groups, parallel within group |
+| `dag` templates | ✓ | Dependency-based execution with `depends:` expressions |
+| `daemon` templates | ✓ | Container left running; IP exposed to downstream steps; stopped after its scope completes |
+| `inputs.parameters` / `outputs.parameters` | ✓ | Full parameter passing |
+| `outputs.result` | ✓ | Script stdout capture |
+| `when` conditionals | ✓ | Evaluated after expression substitution |
+| `retryStrategy` | ✓ | `limit`, `retryPolicy` (OnFailure / OnError / Always), exponential backoff with `factor`, `cap`, `maxDuration` |
+| Inter-step artifact passing | ✓ | Files and directories; lazy extraction — only artifacts consumed downstream are collected |
+| Explicit artifact locations (`s3:`, `gcs:`, `azure:`) | — | ArtifactDriver impls; credentials from kwok Secrets |
+| `WorkflowTemplate` resolution | — | Via kwok CRD lookup |
 
 ### Out of scope
 
@@ -85,7 +82,7 @@ public class ArgoWorkflowExecutor {
     public KubernetesClient getKubernetesClient();   // planned
 
     // Non-blocking: launches execution on a daemon thread pool, returns immediately.
-    public WorkflowRun executeAsync() throws Exception;
+    public WorkflowRun executeAsync();
 
     // Blocking convenience wrapper: equivalent to executeAsync().await().
     public WorkflowRun execute() throws Exception;
@@ -103,10 +100,14 @@ public sealed interface WorkflowNode permits DagRun, StepsRun, PodRun, Uninitial
     String name();
     boolean succeeded();
     boolean failed();
+    boolean errored();
     boolean skipped();
+    boolean omitted();
+    boolean daemoned();
     boolean running();
     boolean pending();
     void skip();
+    void omit();
 }
 ```
 
@@ -130,16 +131,23 @@ public final class StepsRun implements WorkflowNode {
 
 ```java
 public final class PodRun implements WorkflowNode {
-    public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, SKIPPED }
+    public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, ERRORED, SKIPPED, OMITTED, DAEMONED }
 
     public Status status();
     public int exitCode();
     public String logs();
     public Duration duration();
+    public int attempts();  // total container starts across all retry attempts
 
     // outputs.result — stdout of a script template. Empty for container templates.
     public Optional<String> outputResult();
-    public Optional<String> outputParameter(String name);  // planned
+
+    // Daemon pods only.
+    public Optional<String> ip();
+    public boolean isDaemonStopped();
+
+    // Artifacts collected from this pod's outputs, keyed by artifact name.
+    public Map<String, Path> collectedArtifacts();
 
     // Stopped by the time WorkflowRun is returned, but getLogs() etc. remain accessible.
     public GenericContainer<?> container();
@@ -160,7 +168,7 @@ public final class UninitializedNode implements WorkflowNode {
 ### WorkflowRun
 
 ```java
-public final class WorkflowRun {
+public final class WorkflowRun implements AutoCloseable {
     boolean isDone();
     boolean succeeded();
     boolean failed();
@@ -173,6 +181,9 @@ public final class WorkflowRun {
     // Returns the top-level node (the entrypoint template). 
     // Navigate into it via DagRun/StepsRun.get() for specific steps/tasks.
     WorkflowNode entrypoint();
+
+    // Deletes the per-run artifact temp directory. Use via try-with-resources.
+    @Override void close();
 }
 ```
 
@@ -264,14 +275,14 @@ Built-in implementations: `S3ArtifactDriver`, `GcsArtifactDriver`, `AzureBlobArt
 ### Executor (`executor/`)
 
 For each leaf step:
-1. Substitute all `{{...}}` in image, command, args, env
+1. Substitute all `{{...}}` in image, command, args, script source
 2. Evaluate `when` — skip if false
-3. Download input artifacts (driver or temp dir copy)
-4. Build Testcontainer: inject KUBECONFIG, mount named volumes at **parent** of each output artifact path, set env vars
-5. Start, wait for exit; apply `retryStrategy` on failure
-6. Capture stdout → `outputs.result`
-7. Collect output artifacts from volumes; upload (driver) or copy (temp dir) per artifact type
-8. Update `ExecutionContext`
+3. Inject input artifacts — copy from host temp directory into the container before start
+4. Build and start Testcontainer; write script source to `/tmp/script` if a script template
+5. Start, wait for exit; apply `retryStrategy` (retry loop with optional exponential backoff)
+6. Capture stdout → `outputs.result` (script templates only)
+7. Collect output artifacts via Docker TAR API into the per-run temp directory
+8. Register results in `ExecutionContext` (output results, IPs, artifact paths)
 
 Returns a `WorkflowRun` with per-step outcomes, outputs, and logs.
 
@@ -279,17 +290,35 @@ Returns a `WorkflowRun` with per-step outcomes, outputs, and logs.
 
 kwok runs as a Testcontainer on a shared Docker network with step containers. The executor uses the fabric8 client pointed at kwok to resolve `secretKeyRef` credentials for artifact drivers and (later) fetch `WorkflowTemplate` CRDs. Test setup applies Secrets and WorkflowTemplates to kwok before running the workflow. Step containers receive `KUBECONFIG` pointing to kwok's in-network address.
 
-## Artifact — Directory Output Edge Case
+## Artifact Collection
 
-`copyFileFromContainer` in Testcontainers does not support directories. Rather than detecting this at runtime (after the container has exited, too late to remount), the executor **always** mounts a named Docker volume at the **parent** of every declared output artifact path, preemptively. After the container exits, a short-lived utility container mounts the same volume, and the executor copies the artifact path out from there.
+`copyFileFromContainer` in Testcontainers only reads the first TAR entry and does not support directories. Instead, the executor uses the raw Docker TAR API — `copyArchiveFromContainerCmd` — which returns the full archive stream for any path, file or directory. `commons-compress` extracts the TAR into a per-run temp directory under `ExecutionContext.tmpDir`, and the top-level extracted entry becomes the artifact path.
 
-Known accepted limitations: files already at the mount parent inside the image are shadowed; multiple artifact paths sharing a parent share a volume.
+Artifacts are collected lazily: `DagRun` and `StepsRun` precompute at plan time which of each task's output artifacts are consumed by downstream `from:` references. Only those are passed to the pod as `requestedOutputArtifacts`; unclaimed artifacts are never extracted from the container.
+
+`WorkflowRun` implements `AutoCloseable`; `close()` deletes `tmpDir` and everything under it.
 
 ## Testing Philosophy
 
 - **No mocking frameworks.** Tests run against real containers and a real (fake) Kubernetes API.
 - **Unit tests only for isolated utilities.** The expression substitution and artifact archive logic are candidates. Everything else is an integration test.
 - **Hamcrest assertions** (`assertThat` + `Matchers.*`) throughout. `Assert.*` from JUnit is avoided.
+
+### Test package convention
+
+Two top-level test packages serve distinct purposes and must not be mixed:
+
+| Package | Purpose |
+|---|---|
+| `io.github.argoproj.argoworkflows` | Compatibility tests for upstream Argo example workflows from the submodule (`src/test/resources/examples`). The package name mirrors the Argo Workflows GitHub org. Tests here assert only that the executor correctly runs a given upstream workflow — no bespoke helper infrastructure or custom YAML fixtures belong here. |
+| `eu.vnagy.argotools.junit` | Feature-level integration tests for executor behaviour: gate-controlled retries, artifact lifecycle, scope isolation, daemon lifecycle, live-tree observation, summary formatting. Custom YAML fixtures go under `src/test/resources/` (not `examples/`). |
+
+Two sub-packages have narrower roles:
+
+| Sub-package | Purpose |
+|---|---|
+| `eu.vnagy.argotools.junit.executor` | Package-private executor tests that must reach into internals (e.g. `ArtifactLifecycleTest` accessing `WorkflowRun.tmpDir`). Only use this when package-private access is genuinely required. |
+| `eu.vnagy.argotools.junit.testutil` | Shared test infrastructure: `WorkflowReleaseGate`, `RetryOutcomeGate`. Not test classes — no `@Test` methods here. |
 
 ## Test Resources — Argo Workflows Submodule
 
@@ -303,18 +332,24 @@ src/test/resources/examples → ../../argo-workflows/examples
 
 ```
 argo-junit/
-├── argo-workflows/               ← git submodule
+├── argo-workflows/                     ← git submodule
 ├── src/
 │   ├── main/java/eu/vnagy/argotools/
-│   │   ├── model/                ← generated POJOs
-│   │   ├── expression/           ← substitution + when evaluator
-│   │   ├── artifact/             ← ArtifactDriver interface + impls
-│   │   ├── executor/             ← execution engine, Testcontainer lifecycle
-│   │   ├── util/                 ← WorkflowSummary and other test utilities
-│   │   └── kwok/                 ← kwok Testcontainer setup, fabric8 wiring
+│   │   ├── model/                      ← generated POJOs
+│   │   ├── expression/                 ← substitution + when evaluator
+│   │   ├── artifact/                   ← ArtifactDriver interface + impls
+│   │   ├── executor/                   ← execution engine, Testcontainer lifecycle
+│   │   ├── util/                       ← WorkflowSummary and other utilities
+│   │   └── kwok/                       ← kwok Testcontainer setup, fabric8 wiring
 │   └── test/
-│       ├── java/eu/vnagy/argotools/
+│       ├── java/
+│       │   ├── io/github/argoproj/argoworkflows/   ← upstream example workflow tests
+│       │   └── eu/vnagy/argotools/junit/
+│       │       ├── (feature tests)                 ← custom integration tests
+│       │       ├── executor/                       ← package-private executor tests
+│       │       └── testutil/                       ← WorkflowReleaseGate, RetryOutcomeGate
 │       └── resources/
+│           ├── (custom YAML fixtures)
 │           └── examples → ../../argo-workflows/examples  (symlink)
 ├── DESIGN.md
 └── pom.xml
@@ -343,6 +378,13 @@ Goal: parallel DAG execution with observable in-progress state.
 - Test: `LiveWorkflowRunTest` — embedded JDK HTTP server as a release trigger, deterministic observation of four simultaneous states (SUCCEEDED, RUNNING, PENDING, PENDING) mid-run
 - Test: `CountdownLoopTest` — self-recursive `steps` template with a countdown counter; verifies that the tree expands level-by-level during execution and that `UninitializedNode.resolved()` is navigable after completion
 
-### Phase 3+ — To be defined
+### Phase 3 — Retries, daemons, and inter-step artifact passing ✓ Done
 
-Candidates: artifact passing, kwok integration, `retryStrategy`, `WorkflowTemplate` resolution.
+- `retryStrategy`: retry loop in `PodRun` with configurable limit, `retryPolicy` (OnFailure / OnError / Always), and exponential backoff (`factor`, `cap`, `maxDuration`); `PodRun.attempts()` exposes total container starts
+- Daemon pod lifecycle: container left running after start, IP registered in `ExecutionContext`, stopped after its enclosing scope (steps group or DAG) completes
+- Inter-step artifact passing: output artifacts collected from stopped containers via Docker TAR API into `ExecutionContext.tmpDir`; only artifacts consumed by downstream steps extracted (lazy); `WorkflowRun` implements `AutoCloseable` for cleanup
+- `WorkflowSummary`: human-readable tree of step outcomes with duration and retry count
+
+### Phase 4+ — To be defined
+
+Candidates: explicit artifact locations (S3, GCS, Azure via ArtifactDriver), kwok integration, `WorkflowTemplate` resolution.

@@ -8,6 +8,7 @@ import eu.vnagy.argotools.junit.executor.DagRun;
 import eu.vnagy.argotools.junit.executor.StepsRun;
 import eu.vnagy.argotools.junit.executor.UninitializedNode;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
+import eu.vnagy.argotools.junit.testutil.WorkflowReleaseGate;
 import eu.vnagy.argotools.junit.util.WorkflowSummary;
 import eu.vnagy.argotools.junit.model.Workflow;
 import org.junit.jupiter.api.Test;

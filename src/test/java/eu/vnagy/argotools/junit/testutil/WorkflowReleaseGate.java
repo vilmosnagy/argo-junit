@@ -1,4 +1,4 @@
-package eu.vnagy.argotools.junit;
+package eu.vnagy.argotools.junit.testutil;
 
 import com.sun.net.httpserver.HttpServer;
 import org.testcontainers.Testcontainers;
@@ -24,13 +24,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * }
  * }</pre>
  */
-final class WorkflowReleaseGate implements AutoCloseable {
+public final class WorkflowReleaseGate implements AutoCloseable {
 
     private final HttpServer server;
     private final int port;
     private final AtomicBoolean released = new AtomicBoolean(false);
 
-    WorkflowReleaseGate() throws IOException {
+    public WorkflowReleaseGate() throws IOException {
         server = HttpServer.create(new InetSocketAddress(0), 0);
         port = server.getAddress().getPort();
         server.createContext("/ready", exchange -> {
@@ -44,10 +44,10 @@ final class WorkflowReleaseGate implements AutoCloseable {
     }
 
     /** Host port reachable from containers as {@code host.docker.internal:<port>}. */
-    int port() { return port; }
+    public int port() { return port; }
 
     /** Unblocks the next /ready poll, causing any waiting container to proceed. */
-    void release() { released.set(true); }
+    public void release() { released.set(true); }
 
     @Override
     public void close() { server.stop(0); }

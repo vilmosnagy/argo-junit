@@ -9,6 +9,7 @@ import eu.vnagy.argotools.junit.executor.PodRun;
 import eu.vnagy.argotools.junit.executor.StepsRun;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
 import eu.vnagy.argotools.junit.model.Workflow;
+import eu.vnagy.argotools.junit.testutil.WorkflowReleaseGate;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;

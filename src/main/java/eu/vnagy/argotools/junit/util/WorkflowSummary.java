@@ -72,8 +72,13 @@ public final class WorkflowSummary {
     private static String message(WorkflowNode node) {
         if (node.omitted()) return "omitted";
         if (node.skipped()) return "skipped";
+        if (node instanceof PodRun pod) {
+            String retries = pod.attempts() > 1 ? pod.attempts() + " attempts" : "";
+            if (pod.errored()) return retries.isEmpty() ? "error" : "error, " + retries;
+            if (pod.failed())  return "exit code " + pod.exitCode() + (retries.isEmpty() ? "" : ", " + retries);
+            return retries; // succeeded or daemoned; only non-empty when retried
+        }
         if (node.errored()) return "error";
-        if (node instanceof PodRun pod && pod.failed()) return "exit code " + pod.exitCode();
         return "";
     }
 

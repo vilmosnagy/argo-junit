@@ -40,7 +40,9 @@ public final class PodRun implements WorkflowNode {
 
     private enum RetryPolicy { ON_FAILURE, ON_ERROR, ALWAYS }
 
-    private record ArtifactSpec(String name, String path) {}
+    private record ArtifactSpec(String name, String path, Integer mode) {}
+
+    private record ConfigMapRef(String paramName, String cmName, String key) {}
 
     private final String name;
     // Plan fields — parsed from template at construction time
@@ -51,6 +53,7 @@ public final class PodRun implements WorkflowNode {
     private final IoK8sApiCoreV1Probe readinessProbe;
     private final List<ArtifactSpec> outputArtifactSpecs;
     private final List<ArtifactSpec> inputArtifactDecls;
+    private final List<ConfigMapRef> configMapRefs;
     // Retry plan fields
     private final int retryLimit;       // -1 = infinite
     private final RetryPolicy retryPolicy;
@@ -94,23 +97,35 @@ public final class PodRun implements WorkflowNode {
             this.daemon = Boolean.TRUE.equals(template.getDaemon());
             this.readinessProbe = this.daemon ? cont.getReadinessProbe() : null;
         }
-        // Output artifact specs
+        // Output artifact specs (mode not applicable for outputs)
         List<ArtifactSpec> outs = new ArrayList<>();
         if (template.getOutputs() != null && template.getOutputs().getArtifacts() != null) {
             for (var a : template.getOutputs().getArtifacts()) {
-                if (a.getPath() != null) outs.add(new ArtifactSpec(a.getName(), a.getPath()));
+                if (a.getPath() != null) outs.add(new ArtifactSpec(a.getName(), a.getPath(), null));
             }
         }
         this.outputArtifactSpecs = List.copyOf(outs);
 
-        // Input artifact declarations
+        // Input artifact declarations — mode is applied when copying into the container
         List<ArtifactSpec> ins = new ArrayList<>();
         if (template.getInputs() != null && template.getInputs().getArtifacts() != null) {
             for (var a : template.getInputs().getArtifacts()) {
-                if (a.getPath() != null) ins.add(new ArtifactSpec(a.getName(), a.getPath()));
+                if (a.getPath() != null) ins.add(new ArtifactSpec(a.getName(), a.getPath(), a.getMode()));
             }
         }
         this.inputArtifactDecls = List.copyOf(ins);
+
+        // configMapKeyRef input parameters — resolved from the Kubernetes API at runtime
+        List<ConfigMapRef> cmRefs = new ArrayList<>();
+        if (template.getInputs() != null && template.getInputs().getParameters() != null) {
+            for (var p : template.getInputs().getParameters()) {
+                if (p.getValueFrom() != null && p.getValueFrom().getConfigMapKeyRef() != null) {
+                    var ref = p.getValueFrom().getConfigMapKeyRef();
+                    cmRefs.add(new ConfigMapRef(p.getName(), ref.getName(), ref.getKey()));
+                }
+            }
+        }
+        this.configMapRefs = List.copyOf(cmRefs);
 
         // Retry strategy
         RetryStrategy rs = template.getRetryStrategy();
@@ -168,6 +183,18 @@ public final class PodRun implements WorkflowNode {
     }
 
     private void run(ExecutionContext ctx, Map<String, String> inputParams) throws Exception {
+        // Resolve any configMapKeyRef parameters not already provided as explicit args
+        if (!configMapRefs.isEmpty()) {
+            Map<String, String> enriched = new LinkedHashMap<>(inputParams);
+            for (ConfigMapRef ref : configMapRefs) {
+                if (!enriched.containsKey(ref.paramName())) {
+                    enriched.put(ref.paramName(),
+                            ctx.resolveConfigMapKey(ctx.namespace, ref.cmName(), ref.key()));
+                }
+            }
+            inputParams = enriched;
+        }
+
         String resolvedImage = ctx.substitute(image, inputParams);
         List<String> resolvedCommand = ctx.substituteAll(command, inputParams);
         String resolvedScript = scriptSource != null ? ctx.substitute(scriptSource, inputParams) : null;
@@ -242,6 +269,19 @@ public final class PodRun implements WorkflowNode {
             cont.withCommand(resolvedCommand.toArray(String[]::new));
         }
 
+        // Join the kwok Docker network so the container can reach the API server by hostname
+        if (ctx.dockerNetwork != null) {
+            cont.withNetwork(ctx.dockerNetwork);
+        }
+
+        // Inject a kubeconfig pointing to kwok — picked up by kubectl, fabric8, and other k8s clients
+        if (ctx.podKubeconfig != null) {
+            Path kubeconfigFile = Files.createTempFile(ctx.tmpDir, "kwok-kubeconfig-", ".yaml");
+            Files.writeString(kubeconfigFile, ctx.podKubeconfig);
+            cont.withCopyFileToContainer(MountableFile.forHostPath(kubeconfigFile), "/tmp/kwok-kubeconfig.yaml");
+            cont.withEnv("KUBECONFIG", "/tmp/kwok-kubeconfig.yaml");
+        }
+
         if (daemon) {
             if (readinessProbe != null && readinessProbe.getHttpGet() != null) {
                 var httpGet = readinessProbe.getHttpGet();
@@ -282,12 +322,16 @@ public final class PodRun implements WorkflowNode {
             cont.withCopyFileToContainer(MountableFile.forHostPath(scriptFile), "/tmp/script");
         }
 
-        // Inject input artifacts before start
+        // Inject input artifacts before start, applying declared file mode if present
         for (ArtifactSpec decl : inputArtifactDecls) {
             Path hostPath = ctx.inputArtifacts.get(decl.name());
             if (hostPath != null) {
-                log.debug("Pod '{}': injecting input artifact '{}' at '{}'", name, decl.name(), decl.path());
-                cont.withCopyFileToContainer(MountableFile.forHostPath(hostPath), decl.path());
+                log.debug("Pod '{}': injecting input artifact '{}' at '{}' mode={}",
+                        name, decl.name(), decl.path(), decl.mode());
+                MountableFile mf = decl.mode() != null
+                        ? MountableFile.forHostPath(hostPath, decl.mode())
+                        : MountableFile.forHostPath(hostPath);
+                cont.withCopyFileToContainer(mf, decl.path());
             }
         }
 

@@ -1,8 +1,10 @@
 package eu.vnagy.argotools.junit.executor;
 
 import eu.vnagy.argotools.junit.model.Template;
+import io.fabric8.kubernetes.client.KubernetesClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.testcontainers.containers.Network;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -53,13 +55,22 @@ final class ExecutionContext {
     final Path tmpDir;
     // artifact names this pod should collect; null means collect all declared outputs
     final Set<String> requestedOutputArtifacts;
+    // nullable — only set when getKubernetesClient() was called before execute()
+    final KubernetesClient k8sClient;
+    // nullable — Docker network that step containers join to reach kwok
+    final Network dockerNetwork;
+    // nullable — kubeconfig content injected into every step container when kwok is running
+    final String podKubeconfig;
+    // Kubernetes namespace used for ConfigMap lookups; defaults to "default"
+    final String namespace;
 
     ExecutionContext(Map<String, Template> templateMap, Map<String, String> workflowParams,
-                    ExecutorService threadPool) {
+                    ExecutorService threadPool, KubernetesClient k8sClient,
+                    Network dockerNetwork, String podKubeconfig, String namespace) {
         this(templateMap, workflowParams, threadPool,
                 new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>(),
                 new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), Map.of(),
-                createTmpDir(), null);
+                createTmpDir(), null, k8sClient, dockerNetwork, podKubeconfig, namespace);
     }
 
     private static Path createTmpDir() {
@@ -79,7 +90,11 @@ final class ExecutionContext {
                              ConcurrentHashMap<String, Map<String, Path>> taskArtifacts,
                              Map<String, Path> inputArtifacts,
                              Path tmpDir,
-                             Set<String> requestedOutputArtifacts) {
+                             Set<String> requestedOutputArtifacts,
+                             KubernetesClient k8sClient,
+                             Network dockerNetwork,
+                             String podKubeconfig,
+                             String namespace) {
         this.templateMap = templateMap;
         this.workflowParams = workflowParams;
         this.threadPool = threadPool;
@@ -91,6 +106,10 @@ final class ExecutionContext {
         this.inputArtifacts = inputArtifacts;
         this.tmpDir = tmpDir;
         this.requestedOutputArtifacts = requestedOutputArtifacts;
+        this.k8sClient = k8sClient;
+        this.dockerNetwork = dockerNetwork;
+        this.podKubeconfig = podKubeconfig;
+        this.namespace = namespace;
     }
 
     /** Fresh scope for a sub-workflow execution — inherits global maps, resets local ones. */
@@ -98,7 +117,7 @@ final class ExecutionContext {
         return new ExecutionContext(templateMap, workflowParams, threadPool,
                 new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>(),
                 new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), Map.of(),
-                tmpDir, null);
+                tmpDir, null, k8sClient, dockerNetwork, podKubeconfig, namespace);
     }
 
     /**
@@ -110,7 +129,7 @@ final class ExecutionContext {
                 stepOutputResults, stepIps, taskIps,
                 stepArtifacts, taskArtifacts,
                 Map.copyOf(artifacts),
-                tmpDir, requestedOutputArtifacts);
+                tmpDir, requestedOutputArtifacts, k8sClient, dockerNetwork, podKubeconfig, namespace);
     }
 
     /** Returns a view of this context specifying which output artifact names the pod should collect. */
@@ -119,7 +138,7 @@ final class ExecutionContext {
                 stepOutputResults, stepIps, taskIps,
                 stepArtifacts, taskArtifacts,
                 inputArtifacts,
-                tmpDir, Set.copyOf(names));
+                tmpDir, Set.copyOf(names), k8sClient, dockerNetwork, podKubeconfig, namespace);
     }
 
     /**
@@ -140,6 +159,23 @@ final class ExecutionContext {
             return arts != null ? Optional.ofNullable(arts.get(m.group(2))) : Optional.empty();
         }
         return Optional.empty();
+    }
+
+    /**
+     * Resolves a ConfigMap key from the Kubernetes API (kwok).
+     * Fails fast with a clear error if no client was provided.
+     */
+    String resolveConfigMapKey(String namespace, String configMapName, String key) {
+        if (k8sClient == null) throw new IllegalStateException(
+                "configMapKeyRef requires a Kubernetes client — call"
+                + " ArgoWorkflowExecutor.getKubernetesClient() before execute()");
+        var cm = k8sClient.configMaps().inNamespace(namespace).withName(configMapName).get();
+        if (cm == null) throw new IllegalStateException(
+                "ConfigMap '" + configMapName + "' not found in namespace '" + namespace + "'");
+        var data = cm.getData();
+        if (data == null || !data.containsKey(key)) throw new IllegalStateException(
+                "Key '" + key + "' not found in ConfigMap '" + configMapName + "'");
+        return data.get(key);
     }
 
     String substitute(String expr, Map<String, String> inputParams) {

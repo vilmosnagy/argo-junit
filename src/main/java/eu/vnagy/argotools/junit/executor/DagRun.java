@@ -5,19 +5,24 @@ import eu.vnagy.argotools.junit.model.Template;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.regex.Matcher;
 import java.util.stream.Collectors;
 
 public final class DagRun implements WorkflowNode {
 
     private static final Logger log = LoggerFactory.getLogger(DagRun.class);
 
-    private record DagTaskSpec(String name, DependsExpression depends, Map<String, String> args) {}
+    private record DagTaskSpec(String name, DependsExpression depends, Map<String, String> args,
+                               Map<String, String> artifactArgs) {}
 
     private final String name;
     private final List<DagTaskSpec> specs;
     private final Map<String, WorkflowNode> tasks;
+    // taskName -> artifact names that downstream tasks consume from it
+    private final Map<String, Set<String>> neededArtifacts;
     private volatile boolean skipped;
     private volatile boolean omitted;
 
@@ -58,7 +63,7 @@ public final class DagRun implements WorkflowNode {
         Map<String, WorkflowNode> initialTasks = new LinkedHashMap<>();
         for (DAGTask t : topologicalSort(dagTasks)) {
             builtSpecs.add(new DagTaskSpec(t.getName(),
-                    new DependsExpression(t.getDepends()), resolveArgs(t)));
+                    new DependsExpression(t.getDepends()), resolveArgs(t), resolveArtifactArgs(t)));
             Template taskTemplate = templateMap.get(t.getTemplate());
             WorkflowNode child = (taskTemplate == null || nowConstructing.contains(taskTemplate.getName()))
                     ? new UninitializedNode(t.getName(), taskTemplate)
@@ -67,6 +72,19 @@ public final class DagRun implements WorkflowNode {
         }
         this.specs = Collections.unmodifiableList(builtSpecs);
         this.tasks = Collections.unmodifiableMap(initialTasks);
+
+        Map<String, Set<String>> needed = new LinkedHashMap<>();
+        for (DagTaskSpec spec : builtSpecs) {
+            for (String from : spec.artifactArgs().values()) {
+                Matcher m = ExecutionContext.TASK_ARTIFACT_FROM.matcher(from.trim());
+                if (m.matches()) {
+                    needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
+                }
+            }
+        }
+        Map<String, Set<String>> immutableNeeded = new LinkedHashMap<>();
+        needed.forEach((k, v) -> immutableNeeded.put(k, Set.copyOf(v)));
+        this.neededArtifacts = Collections.unmodifiableMap(immutableNeeded);
     }
 
     @Override
@@ -98,7 +116,16 @@ public final class DagRun implements WorkflowNode {
 
                 Map<String, String> resolvedArgs = new LinkedHashMap<>();
                 spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
-                return tasks.get(spec.name()).executeAsync(localCtx, resolvedArgs);
+
+                Map<String, Path> resolvedArtifacts = new LinkedHashMap<>();
+                spec.artifactArgs().forEach((artName, from) ->
+                        localCtx.resolveArtifactFrom(from).ifPresent(p -> resolvedArtifacts.put(artName, p)));
+                ExecutionContext podCtx = resolvedArtifacts.isEmpty()
+                        ? localCtx : localCtx.withInputArtifacts(resolvedArtifacts);
+                podCtx = podCtx.withRequestedOutputArtifacts(
+                        neededArtifacts.getOrDefault(spec.name(), Set.of()));
+
+                return tasks.get(spec.name()).executeAsync(podCtx, resolvedArgs);
             }, localCtx.threadPool)
             .thenApply(result -> {
                 if (result instanceof PodRun pod) {
@@ -106,6 +133,12 @@ public final class DagRun implements WorkflowNode {
                         log.debug("Dag '{}': task '{}' daemon ip='{}'", name, spec.name(), ip);
                         localCtx.taskIps.put(spec.name(), ip);
                     });
+                    Map<String, Path> artifacts = pod.collectedArtifacts();
+                    if (!artifacts.isEmpty()) {
+                        log.debug("Dag '{}': task '{}' {} output artifact(s) collected",
+                                name, spec.name(), artifacts.size());
+                        localCtx.taskArtifacts.put(spec.name(), artifacts);
+                    }
                 }
                 return result;
             });
@@ -164,6 +197,15 @@ public final class DagRun implements WorkflowNode {
         Map<String, String> args = new LinkedHashMap<>();
         for (var p : task.getArguments().getParameters()) {
             if (p.getValue() != null) args.put(p.getName(), p.getValue());
+        }
+        return Collections.unmodifiableMap(args);
+    }
+
+    private static Map<String, String> resolveArtifactArgs(DAGTask task) {
+        if (task.getArguments() == null || task.getArguments().getArtifacts() == null) return Map.of();
+        Map<String, String> args = new LinkedHashMap<>();
+        for (var a : task.getArguments().getArtifacts()) {
+            if (a.getFrom() != null) args.put(a.getName(), a.getFrom());
         }
         return Collections.unmodifiableMap(args);
     }

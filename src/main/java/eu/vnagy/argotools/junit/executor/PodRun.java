@@ -13,11 +13,18 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.utility.MountableFile;
 
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
+
+import java.io.InputStream;
 import java.nio.file.Files;
+import java.util.Set;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -29,6 +36,8 @@ public final class PodRun implements WorkflowNode {
 
     public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, ERRORED, SKIPPED, OMITTED, DAEMONED }
 
+    private record ArtifactSpec(String name, String path) {}
+
     private final String name;
     // Plan fields — parsed from template at construction time
     private final String image;
@@ -36,6 +45,8 @@ public final class PodRun implements WorkflowNode {
     private final String scriptSource;
     private final boolean daemon;
     private final IoK8sApiCoreV1Probe readinessProbe;
+    private final List<ArtifactSpec> outputArtifactSpecs;
+    private final List<ArtifactSpec> inputArtifactDecls;
     // Mutable execution state — volatile for visibility across threads
     private volatile Status status;
     private volatile int exitCode;
@@ -45,6 +56,7 @@ public final class PodRun implements WorkflowNode {
     private volatile GenericContainer<?> container;
     private volatile Duration duration;
     private volatile boolean daemonStopped;
+    private volatile Map<String, Path> collectedArtifacts = Map.of();
 
     /** Plan constructor: parses the template once so executeAsync never touches argo model classes. */
     PodRun(String name, Template template) {
@@ -70,6 +82,24 @@ public final class PodRun implements WorkflowNode {
             this.daemon = Boolean.TRUE.equals(template.getDaemon());
             this.readinessProbe = this.daemon ? cont.getReadinessProbe() : null;
         }
+        // Output artifact specs
+        List<ArtifactSpec> outs = new ArrayList<>();
+        if (template.getOutputs() != null && template.getOutputs().getArtifacts() != null) {
+            for (var a : template.getOutputs().getArtifacts()) {
+                if (a.getPath() != null) outs.add(new ArtifactSpec(a.getName(), a.getPath()));
+            }
+        }
+        this.outputArtifactSpecs = List.copyOf(outs);
+
+        // Input artifact declarations
+        List<ArtifactSpec> ins = new ArrayList<>();
+        if (template.getInputs() != null && template.getInputs().getArtifacts() != null) {
+            for (var a : template.getInputs().getArtifacts()) {
+                if (a.getPath() != null) ins.add(new ArtifactSpec(a.getName(), a.getPath()));
+            }
+        }
+        this.inputArtifactDecls = List.copyOf(ins);
+
         this.status = Status.PENDING;
         this.exitCode = 0;
         this.logs = "";
@@ -148,6 +178,15 @@ public final class PodRun implements WorkflowNode {
             cont.withCopyFileToContainer(MountableFile.forHostPath(scriptFile), "/tmp/script");
         }
 
+        // Inject input artifacts before start
+        for (ArtifactSpec decl : inputArtifactDecls) {
+            Path hostPath = ctx.inputArtifacts.get(decl.name());
+            if (hostPath != null) {
+                log.debug("Pod '{}': injecting input artifact '{}' at '{}'", name, decl.name(), decl.path());
+                cont.withCopyFileToContainer(MountableFile.forHostPath(hostPath), decl.path());
+            }
+        }
+
         this.status = Status.RUNNING;
         Instant start = Instant.now();
         cont.start();
@@ -182,6 +221,54 @@ public final class PodRun implements WorkflowNode {
             this.container = cont;
             this.duration = elapsed;
             this.status = code == 0 ? Status.SUCCEEDED : Status.FAILED;
+
+            // Collect only output artifacts requested by downstream steps/tasks
+            Set<String> requested = ctx.requestedOutputArtifacts;
+            List<ArtifactSpec> specsToCollect = requested == null ? outputArtifactSpecs
+                    : outputArtifactSpecs.stream().filter(s -> requested.contains(s.name())).toList();
+            if (!specsToCollect.isEmpty()) {
+                Map<String, Path> collected = new LinkedHashMap<>();
+                for (ArtifactSpec spec : specsToCollect) {
+                    try {
+                        Path artifact = extractArtifact(cont, spec, ctx.tmpDir);
+                        collected.put(spec.name(), artifact);
+                        log.debug("Pod '{}': collected output artifact '{}' from '{}' → '{}'",
+                                name, spec.name(), spec.path(), artifact);
+                    } catch (Exception e) {
+                        log.warn("Pod '{}': failed to collect output artifact '{}' from '{}'",
+                                name, spec.name(), spec.path(), e);
+                    }
+                }
+                this.collectedArtifacts = Map.copyOf(collected);
+            }
+        }
+    }
+
+    /**
+     * Extracts a container artifact into a temp directory using the raw Docker TAR API.
+     * Supports both file and directory artifacts; returns the path of the single top-level
+     * item extracted (a file or a directory).
+     */
+    private Path extractArtifact(GenericContainer<?> cont, ArtifactSpec spec, Path parentDir) throws Exception {
+        Path tempDir = Files.createTempDirectory(parentDir, "argo-art-" + name + "-");
+        try (InputStream tarStream = cont.getDockerClient()
+                .copyArchiveFromContainerCmd(cont.getContainerId(), spec.path()).exec();
+             TarArchiveInputStream tarInput = new TarArchiveInputStream(tarStream)) {
+            TarArchiveEntry entry;
+            while ((entry = tarInput.getNextTarEntry()) != null) {
+                Path target = tempDir.resolve(entry.getName());
+                if (entry.isDirectory()) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.createDirectories(target.getParent());
+                    Files.copy(tarInput, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+        try (var ls = Files.list(tempDir)) {
+            return ls.findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "No content extracted for artifact '" + spec.name() + "' from '" + spec.path() + "'"));
         }
     }
 
@@ -210,9 +297,10 @@ public final class PodRun implements WorkflowNode {
     public Status status()                 { return status; }
     public int exitCode()                  { return exitCode; }
     public String logs()                   { return logs; }
-    public Optional<String> outputResult() { return Optional.ofNullable(outputResult); }
-    public Optional<String> ip()           { return Optional.ofNullable(ip); }
-    public boolean isDaemonStopped()       { return daemonStopped; }
+    public Optional<String> outputResult()   { return Optional.ofNullable(outputResult); }
+    public Optional<String> ip()             { return Optional.ofNullable(ip); }
+    public boolean isDaemonStopped()         { return daemonStopped; }
+    public Map<String, Path> collectedArtifacts() { return collectedArtifacts; }
     /** The stopped container. Logs and state remain accessible until Ryuk removes it. */
     public GenericContainer<?> container() { return container; }
     public Duration duration()             { return duration; }

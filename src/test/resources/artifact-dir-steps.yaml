@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: artifact-dir-steps-
+spec:
+  entrypoint: dir-steps-example
+  templates:
+  - name: dir-steps-example
+    steps:
+    - - name: generate-files
+        template: create-two-files
+    - - name: print-files
+        template: cat-two-files
+        arguments:
+          artifacts:
+          - name: files-dir
+            from: "{{steps.generate-files.outputs.artifacts.files-dir}}"
+
+  - name: create-two-files
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["mkdir -p /tmp/files && echo file-one > /tmp/files/one.txt && echo file-two > /tmp/files/two.txt"]
+    outputs:
+      artifacts:
+      - name: files-dir
+        path: /tmp/files
+
+  - name: cat-two-files
+    inputs:
+      artifacts:
+      - name: files-dir
+        path: /tmp/files
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["cat /tmp/files/one.txt && cat /tmp/files/two.txt"]

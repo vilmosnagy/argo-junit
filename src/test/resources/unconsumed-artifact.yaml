@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: unconsumed-artifact-
+spec:
+  entrypoint: main
+  templates:
+  - name: main
+    steps:
+    - - name: produce
+        template: write-file
+  - name: write-file
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["echo hello > /tmp/output.txt"]
+    outputs:
+      artifacts:
+      - name: output-file
+        path: /tmp/output.txt

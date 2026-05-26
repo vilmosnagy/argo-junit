@@ -85,7 +85,7 @@ public class ArgoWorkflowExecutor {
                 .thenAccept(_ -> {})
                 .whenComplete((_, _) -> threadPool.shutdown());
 
-        return new WorkflowRun(root, future);
+        return new WorkflowRun(root, future, ctx.tmpDir);
     }
 
     public WorkflowRun execute() throws Exception {

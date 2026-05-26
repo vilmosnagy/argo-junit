@@ -5,18 +5,23 @@ import eu.vnagy.argotools.junit.model.WorkflowStep;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.regex.Matcher;
 
 public final class StepsRun implements WorkflowNode {
 
     private static final Logger log = LoggerFactory.getLogger(StepsRun.class);
 
-    private record StepSpec(String name, String when, Map<String, String> args) {}
+    private record StepSpec(String name, String when, Map<String, String> args,
+                            Map<String, String> artifactArgs) {}
 
     private final String name;
     private final List<List<StepSpec>> groups;
     private final Map<String, WorkflowNode> steps;
+    // stepName -> artifact names that downstream steps consume from it
+    private final Map<String, Set<String>> neededArtifacts;
     private volatile boolean skipped;
     private volatile boolean omitted;
 
@@ -44,7 +49,8 @@ public final class StepsRun implements WorkflowNode {
                             "Steps '" + name + "': step '" + step.getName()
                             + "' references unknown template '" + step.getTemplate() + "'");
                 }
-                specGroup.add(new StepSpec(step.getName(), step.getWhen(), parseArgs(step)));
+                specGroup.add(new StepSpec(step.getName(), step.getWhen(),
+                        parseArgs(step), parseArtifactArgs(step)));
                 WorkflowNode child = nowConstructing.contains(stepTemplate.getName())
                         ? new UninitializedNode(step.getName(), stepTemplate)
                         : WorkflowNode.from(step.getName(), stepTemplate, templateMap, nowConstructing);
@@ -54,6 +60,21 @@ public final class StepsRun implements WorkflowNode {
         }
         this.groups = List.copyOf(builtGroups);
         this.steps = Collections.unmodifiableMap(initialSteps);
+
+        Map<String, Set<String>> needed = new LinkedHashMap<>();
+        for (List<StepSpec> group : builtGroups) {
+            for (StepSpec spec : group) {
+                for (String from : spec.artifactArgs().values()) {
+                    Matcher m = ExecutionContext.STEP_ARTIFACT_FROM.matcher(from.trim());
+                    if (m.matches()) {
+                        needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
+                    }
+                }
+            }
+        }
+        Map<String, Set<String>> immutableNeeded = new LinkedHashMap<>();
+        needed.forEach((k, v) -> immutableNeeded.put(k, Set.copyOf(v)));
+        this.neededArtifacts = Collections.unmodifiableMap(immutableNeeded);
     }
 
     @Override
@@ -89,9 +110,17 @@ public final class StepsRun implements WorkflowNode {
                     Map<String, String> resolvedArgs = new LinkedHashMap<>();
                     spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
 
+                    Map<String, Path> resolvedArtifacts = new LinkedHashMap<>();
+                    spec.artifactArgs().forEach((artName, from) ->
+                            localCtx.resolveArtifactFrom(from).ifPresent(p -> resolvedArtifacts.put(artName, p)));
+                    ExecutionContext podCtx = resolvedArtifacts.isEmpty()
+                            ? localCtx : localCtx.withInputArtifacts(resolvedArtifacts);
+                    podCtx = podCtx.withRequestedOutputArtifacts(
+                            neededArtifacts.getOrDefault(spec.name(), Set.of()));
+
                     log.debug("Step '{}': running args={}", spec.name(), resolvedArgs);
                     groupFutures.add(
-                            node.executeAsync(localCtx, resolvedArgs)
+                            node.executeAsync(podCtx, resolvedArgs)
                                     .thenApply(result -> {
                                         if (result instanceof PodRun pod) {
                                             pod.outputResult().ifPresent(r -> {
@@ -102,6 +131,12 @@ public final class StepsRun implements WorkflowNode {
                                                 log.debug("Step '{}': daemon ip='{}'", pod.name(), ip);
                                                 localCtx.stepIps.put(spec.name(), ip);
                                             });
+                                            Map<String, Path> artifacts = pod.collectedArtifacts();
+                                            if (!artifacts.isEmpty()) {
+                                                log.debug("Step '{}': {} output artifact(s) collected",
+                                                        spec.name(), artifacts.size());
+                                                localCtx.stepArtifacts.put(spec.name(), artifacts);
+                                            }
                                         }
                                         return result;
                                     }));
@@ -162,6 +197,15 @@ public final class StepsRun implements WorkflowNode {
         Map<String, String> args = new LinkedHashMap<>();
         for (var p : step.getArguments().getParameters()) {
             if (p.getValue() != null) args.put(p.getName(), p.getValue());
+        }
+        return Collections.unmodifiableMap(args);
+    }
+
+    private static Map<String, String> parseArtifactArgs(WorkflowStep step) {
+        if (step.getArguments() == null || step.getArguments().getArtifacts() == null) return Map.of();
+        Map<String, String> args = new LinkedHashMap<>();
+        for (var a : step.getArguments().getArtifacts()) {
+            if (a.getFrom() != null) args.put(a.getName(), a.getFrom());
         }
         return Collections.unmodifiableMap(args);
     }

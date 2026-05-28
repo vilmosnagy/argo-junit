@@ -3,6 +3,7 @@ package eu.vnagy.argotools.junit.executor;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.DAGTask;
@@ -28,6 +29,8 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
+import java.util.ServiceLoader;
 
 /**
  * Parses an Argo Workflow definition and executes it locally using Testcontainers.
@@ -265,8 +268,13 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
             return t;
         });
 
+        List<ArtifactDriver> drivers = ServiceLoader.load(ArtifactDriver.class)
+                .stream()
+                .map(ServiceLoader.Provider::get)
+                .collect(Collectors.toList());
+
         ExecutionContext ctx = new ExecutionContext(templateMap, workflowParams, threadPool,
-                k8sClient, resolveNetwork(), podKubeconfig, namespace);
+                k8sClient, resolveNetwork(), podKubeconfig, namespace, drivers);
 
         // Download workflow-level HTTP input artifacts before execution starts
         Map<String, Path> workflowArtifacts = downloadWorkflowArtifacts(ctx.tmpDir);

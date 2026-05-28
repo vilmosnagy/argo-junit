@@ -1,5 +1,7 @@
 package eu.vnagy.argotools.junit.executor;
 
+import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
+import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.Template;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import org.slf4j.Logger;
@@ -63,14 +65,18 @@ final class ExecutionContext {
     final String podKubeconfig;
     // Kubernetes namespace used for ConfigMap lookups; defaults to "default"
     final String namespace;
+    // drivers for explicit artifact locations (s3:, gcs:, azure:); discovered via ServiceLoader
+    final List<ArtifactDriver> artifactDrivers;
 
     ExecutionContext(Map<String, Template> templateMap, Map<String, String> workflowParams,
                     ExecutorService threadPool, KubernetesClient k8sClient,
-                    Network dockerNetwork, String podKubeconfig, String namespace) {
+                    Network dockerNetwork, String podKubeconfig, String namespace,
+                    List<ArtifactDriver> artifactDrivers) {
         this(templateMap, workflowParams, threadPool,
                 new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>(),
                 new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), Map.of(),
-                createTmpDir(), null, k8sClient, dockerNetwork, podKubeconfig, namespace);
+                createTmpDir(), null, k8sClient, dockerNetwork, podKubeconfig, namespace,
+                artifactDrivers);
     }
 
     private static Path createTmpDir() {
@@ -94,7 +100,8 @@ final class ExecutionContext {
                              KubernetesClient k8sClient,
                              Network dockerNetwork,
                              String podKubeconfig,
-                             String namespace) {
+                             String namespace,
+                             List<ArtifactDriver> artifactDrivers) {
         this.templateMap = templateMap;
         this.workflowParams = workflowParams;
         this.threadPool = threadPool;
@@ -110,6 +117,7 @@ final class ExecutionContext {
         this.dockerNetwork = dockerNetwork;
         this.podKubeconfig = podKubeconfig;
         this.namespace = namespace;
+        this.artifactDrivers = List.copyOf(artifactDrivers);
     }
 
     /** Fresh scope for a sub-workflow execution — inherits global maps, resets local ones. */
@@ -117,7 +125,7 @@ final class ExecutionContext {
         return new ExecutionContext(templateMap, workflowParams, threadPool,
                 new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>(),
                 new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), Map.of(),
-                tmpDir, null, k8sClient, dockerNetwork, podKubeconfig, namespace);
+                tmpDir, null, k8sClient, dockerNetwork, podKubeconfig, namespace, artifactDrivers);
     }
 
     /**
@@ -129,7 +137,8 @@ final class ExecutionContext {
                 stepOutputResults, stepIps, taskIps,
                 stepArtifacts, taskArtifacts,
                 Map.copyOf(artifacts),
-                tmpDir, requestedOutputArtifacts, k8sClient, dockerNetwork, podKubeconfig, namespace);
+                tmpDir, requestedOutputArtifacts, k8sClient, dockerNetwork, podKubeconfig, namespace,
+                artifactDrivers);
     }
 
     /** Returns a view of this context specifying which output artifact names the pod should collect. */
@@ -138,7 +147,13 @@ final class ExecutionContext {
                 stepOutputResults, stepIps, taskIps,
                 stepArtifacts, taskArtifacts,
                 inputArtifacts,
-                tmpDir, Set.copyOf(names), k8sClient, dockerNetwork, podKubeconfig, namespace);
+                tmpDir, Set.copyOf(names), k8sClient, dockerNetwork, podKubeconfig, namespace,
+                artifactDrivers);
+    }
+
+    /** Returns the first driver that handles the given artifact's location type, if any. */
+    Optional<ArtifactDriver> findDriver(Artifact artifact) {
+        return artifactDrivers.stream().filter(d -> d.supports(artifact)).findFirst();
     }
 
     /**

@@ -1,5 +1,7 @@
 package eu.vnagy.argotools.junit.executor;
 
+import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
+import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.Backoff;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Probe;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
@@ -40,7 +42,7 @@ public final class PodRun implements WorkflowNode {
 
     private enum RetryPolicy { ON_FAILURE, ON_ERROR, ALWAYS }
 
-    private record ArtifactSpec(String name, String path, Integer mode) {}
+    private record ArtifactSpec(String name, String path, Integer mode, Artifact artifact) {}
 
     private record ConfigMapRef(String paramName, String cmName, String key) {}
 
@@ -101,7 +103,7 @@ public final class PodRun implements WorkflowNode {
         List<ArtifactSpec> outs = new ArrayList<>();
         if (template.getOutputs() != null && template.getOutputs().getArtifacts() != null) {
             for (var a : template.getOutputs().getArtifacts()) {
-                if (a.getPath() != null) outs.add(new ArtifactSpec(a.getName(), a.getPath(), null));
+                if (a.getPath() != null) outs.add(new ArtifactSpec(a.getName(), a.getPath(), null, a));
             }
         }
         this.outputArtifactSpecs = List.copyOf(outs);
@@ -110,7 +112,7 @@ public final class PodRun implements WorkflowNode {
         List<ArtifactSpec> ins = new ArrayList<>();
         if (template.getInputs() != null && template.getInputs().getArtifacts() != null) {
             for (var a : template.getInputs().getArtifacts()) {
-                if (a.getPath() != null) ins.add(new ArtifactSpec(a.getName(), a.getPath(), a.getMode()));
+                if (a.getPath() != null) ins.add(new ArtifactSpec(a.getName(), a.getPath(), a.getMode(), a));
             }
         }
         this.inputArtifactDecls = List.copyOf(ins);
@@ -201,13 +203,28 @@ public final class PodRun implements WorkflowNode {
 
         log.debug("Pod '{}': starting image='{}' command={}", name, resolvedImage, resolvedCommand);
 
+        // Download external input artifacts (S3, etc.) onto the host before the retry loop
+        Map<String, Path> effectiveInputs = new LinkedHashMap<>(ctx.inputArtifacts);
+        for (ArtifactSpec decl : inputArtifactDecls) {
+            if (decl.artifact() != null) {
+                Optional<ArtifactDriver> maybeDriver = ctx.findDriver(decl.artifact());
+                if (maybeDriver.isPresent()) {
+                    Path downloaded = maybeDriver.get().download(
+                            decl.artifact(), ctx.tmpDir, ctx.k8sClient, ctx.namespace);
+                    effectiveInputs.put(decl.name(), downloaded);
+                    log.debug("Pod '{}': downloaded external input artifact '{}' → '{}'",
+                            name, decl.name(), downloaded);
+                }
+            }
+        }
+
         this.attempts = 0;
         Duration currentBackoff = backoffDuration;
         Instant retryStart = Instant.now();
 
         while (true) {
             this.attempts++;
-            runAttempt(ctx, resolvedImage, resolvedCommand, resolvedScript);
+            runAttempt(ctx, resolvedImage, resolvedCommand, resolvedScript, effectiveInputs);
 
             boolean shouldRetry = switch (retryPolicy) {
                 case ON_FAILURE -> status == Status.FAILED;
@@ -241,16 +258,34 @@ public final class PodRun implements WorkflowNode {
         // Collect output artifacts from the final run
         if (!daemon && this.container != null) {
             Set<String> requested = ctx.requestedOutputArtifacts;
-            List<ArtifactSpec> specsToCollect = requested == null ? outputArtifactSpecs
-                    : outputArtifactSpecs.stream().filter(s -> requested.contains(s.name())).toList();
+            // Always collect artifacts that have an external location (S3 etc.) regardless of
+            // whether a downstream step requested them — they need to be uploaded unconditionally.
+            List<ArtifactSpec> specsToCollect;
+            if (requested == null) {
+                specsToCollect = outputArtifactSpecs;
+            } else {
+                specsToCollect = outputArtifactSpecs.stream()
+                        .filter(s -> requested.contains(s.name())
+                                  || (s.artifact() != null && ctx.findDriver(s.artifact()).isPresent()))
+                        .toList();
+            }
             if (!specsToCollect.isEmpty()) {
                 Map<String, Path> collected = new LinkedHashMap<>();
                 for (ArtifactSpec spec : specsToCollect) {
                     try {
-                        Path artifact = extractArtifact(this.container, spec, ctx.tmpDir);
-                        collected.put(spec.name(), artifact);
+                        Path extracted = extractArtifact(this.container, spec, ctx.tmpDir);
+                        collected.put(spec.name(), extracted);
                         log.debug("Pod '{}': collected output artifact '{}' from '{}' → '{}'",
-                                name, spec.name(), spec.path(), artifact);
+                                name, spec.name(), spec.path(), extracted);
+                        if (spec.artifact() != null) {
+                            Optional<ArtifactDriver> maybeDriver = ctx.findDriver(spec.artifact());
+                            if (maybeDriver.isPresent()) {
+                                maybeDriver.get().upload(
+                                        spec.artifact(), extracted, ctx.k8sClient, ctx.namespace);
+                                log.debug("Pod '{}': uploaded output artifact '{}' to external storage",
+                                        name, spec.name());
+                            }
+                        }
                     } catch (Exception e) {
                         log.warn("Pod '{}': failed to collect output artifact '{}' from '{}'",
                                 name, spec.name(), spec.path(), e);
@@ -262,7 +297,8 @@ public final class PodRun implements WorkflowNode {
     }
 
     private void runAttempt(ExecutionContext ctx, String resolvedImage,
-                            List<String> resolvedCommand, String resolvedScript) throws Exception {
+                            List<String> resolvedCommand, String resolvedScript,
+                            Map<String, Path> effectiveInputs) throws Exception {
         @SuppressWarnings("resource")
         GenericContainer<?> cont = new GenericContainer<>(DockerImageName.parse(resolvedImage));
         if (!resolvedCommand.isEmpty()) {
@@ -324,7 +360,7 @@ public final class PodRun implements WorkflowNode {
 
         // Inject input artifacts before start, applying declared file mode if present
         for (ArtifactSpec decl : inputArtifactDecls) {
-            Path hostPath = ctx.inputArtifacts.get(decl.name());
+            Path hostPath = effectiveInputs.get(decl.name());
             if (hostPath != null) {
                 log.debug("Pod '{}': injecting input artifact '{}' at '{}' mode={}",
                         name, decl.name(), decl.path(), decl.mode());

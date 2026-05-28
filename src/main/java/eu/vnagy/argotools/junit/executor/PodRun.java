@@ -68,6 +68,7 @@ public final class PodRun implements WorkflowNode {
     private final String scriptSource;
     private final boolean daemon;
     private final IoK8sApiCoreV1Probe readinessProbe;
+    private final List<String> execProbeCommand;
     private final List<ArtifactSpec> outputArtifactSpecs;
     private final List<OutputParamSpec> outputParamSpecs;
     private final List<ArtifactSpec> inputArtifactDecls;
@@ -117,6 +118,12 @@ public final class PodRun implements WorkflowNode {
             this.scriptSource = null;
             this.daemon = Boolean.TRUE.equals(template.getDaemon());
             this.readinessProbe = this.daemon ? cont.getReadinessProbe() : null;
+        }
+        if (this.daemon && this.readinessProbe != null && this.readinessProbe.getExec() != null) {
+            var cmd = this.readinessProbe.getExec().getCommand();
+            this.execProbeCommand = cmd != null ? List.copyOf(cmd) : List.of();
+        } else {
+            this.execProbeCommand = null;
         }
         // Output artifact specs (mode not applicable for outputs)
         List<ArtifactSpec> outs = new ArrayList<>();
@@ -434,6 +441,37 @@ public final class PodRun implements WorkflowNode {
                         .forPort(probePort)
                         .forStatusCodeMatching(code -> code >= 200 && code < 300)
                         .withStartupTimeout(Duration.ofMinutes(5)));
+            } else if (execProbeCommand != null && !execProbeCommand.isEmpty()) {
+                int initialDelay = readinessProbe.getInitialDelaySeconds() != null
+                        ? readinessProbe.getInitialDelaySeconds() : 0;
+                int period = readinessProbe.getPeriodSeconds() != null
+                        ? readinessProbe.getPeriodSeconds() : 10;
+                int failureThreshold = readinessProbe.getFailureThreshold() != null
+                        ? readinessProbe.getFailureThreshold() : 3;
+                Duration probeTimeout = Duration.ofSeconds(initialDelay + (long) failureThreshold * period);
+                String[] probeCmd = execProbeCommand.toArray(String[]::new);
+                cont.waitingFor(new AbstractWaitStrategy() {
+                    @Override
+                    protected void waitUntilReady() {
+                        if (initialDelay > 0) {
+                            try { Thread.sleep(initialDelay * 1000L); }
+                            catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                        }
+                        Instant deadline = Instant.now().plus(probeTimeout);
+                        while (Instant.now().isBefore(deadline)) {
+                            try {
+                                var result = cont.execInContainer(probeCmd);
+                                if (result.getExitCode() == 0) return;
+                            } catch (Exception e) {
+                                log.debug("Daemon pod '{}': exec probe error: {}", name, e.getMessage());
+                            }
+                            try { Thread.sleep(period * 1000L); }
+                            catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                        }
+                        throw new IllegalStateException(
+                                "Daemon pod '" + name + "': exec probe timed out after " + probeTimeout);
+                    }
+                });
             } else {
                 cont.waitingFor(new AbstractWaitStrategy() {
                     @Override protected void waitUntilReady() {}

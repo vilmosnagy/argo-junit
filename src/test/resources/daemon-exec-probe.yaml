@@ -1,0 +1,43 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: daemon-exec-probe-
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: gate_port
+        value: "8080"
+  templates:
+    - name: main
+      steps:
+        - - name: file-daemon
+            template: file-daemon
+        - - name: client
+            template: client
+            arguments:
+              parameters:
+                - name: daemon-ip
+                  value: "{{steps.file-daemon.ip}}"
+
+    - name: file-daemon
+      daemon: true
+      container:
+        image: alpine:3.21
+        command:
+          - sh
+          - -c
+          - "until [ \"$(wget -qO- http://host.docker.internal:{{workflow.parameters.gate_port}}/ready 2>/dev/null)\" = OK ]; do sleep 1; done; touch /tmp/ready; tail -f /dev/null"
+        readinessProbe:
+          exec:
+            command: [test, -f, /tmp/ready]
+          periodSeconds: 1
+          failureThreshold: 30
+
+    - name: client
+      inputs:
+        parameters:
+          - name: daemon-ip
+      container:
+        image: alpine:3.21
+        command: [sh, -c, "echo daemon is at {{inputs.parameters.daemon-ip}}"]

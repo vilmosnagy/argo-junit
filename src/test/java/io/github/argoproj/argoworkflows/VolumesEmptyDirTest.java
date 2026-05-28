@@ -1,0 +1,37 @@
+package io.github.argoproj.argoworkflows;
+
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
+import eu.vnagy.argotools.junit.executor.WorkflowRun;
+import eu.vnagy.argotools.junit.model.Workflow;
+import org.junit.jupiter.api.Test;
+
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.is;
+
+class VolumesEmptyDirTest {
+
+    private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory())
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+    /**
+     * Smoke-tests that the upstream example workflow completes without error.
+     *
+     * <p>The upstream script uses {@code [[ -n $vol_found ]]} with an unquoted variable.
+     * Alpine's busybox {@code /bin/sh} word-splits unquoted expansions inside {@code [[},
+     * so mount output like {@code overlay on /mnt/vol ...} causes {@code sh: on: unknown operand}
+     * and the else-branch fires even though the volume is mounted. The exit code is still 0,
+     * so workflow success is a valid signal. The actual mount assertion lives in
+     * {@link eu.vnagy.argotools.junit.EmptyDirVolumeTest} using a POSIX-safe fixture.
+     */
+    @Test
+    void emptyDirVolumeIsMounted() throws Exception {
+        Workflow wf = YAML.readValue(
+                getClass().getResource("/examples/volumes-emptydir.yaml"), Workflow.class);
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+            assertThat(run.succeeded(), is(true));
+        }
+    }
+}

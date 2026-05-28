@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: volume-configmap-
+spec:
+  entrypoint: read-configmap-volume
+  volumes:
+  - name: app-config
+    configMap:
+      name: my-app-config
+  templates:
+  - name: read-configmap-volume
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["cat /config/greeting && echo && cat /config/farewell"]
+      volumeMounts:
+      - name: app-config
+        mountPath: /config

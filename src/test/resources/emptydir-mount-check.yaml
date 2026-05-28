@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: emptydir-mount-check-
+spec:
+  entrypoint: check
+  volumes:
+  - name: workdir
+    emptyDir: {}
+  templates:
+  - name: check
+    container:
+      image: alpine:3.21
+      command: [sh, -c, "[ -d /mnt/vol ] && echo 'Volume mounted and found' || echo 'Not found'"]
+      volumeMounts:
+      - name: workdir
+        mountPath: /mnt/vol

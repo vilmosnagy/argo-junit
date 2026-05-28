@@ -7,6 +7,7 @@ import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.DAGTask;
+import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Volume;
 import eu.vnagy.argotools.junit.model.Parameter;
 import eu.vnagy.argotools.junit.model.Template;
 import eu.vnagy.argotools.junit.model.Workflow;
@@ -280,12 +281,20 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 .map(ServiceLoader.Provider::get)
                 .collect(Collectors.toList());
 
+        Map<String, IoK8sApiCoreV1Volume> volumes = new LinkedHashMap<>();
+        if (workflow.getSpec().getVolumes() != null) {
+            for (IoK8sApiCoreV1Volume v : workflow.getSpec().getVolumes()) {
+                volumes.put(v.getName(), v);
+            }
+        }
+
         ExecutionContext ctx = ExecutionContext.builder(templateMap, workflowParams, threadPool)
                 .k8sClient(k8sClient)
                 .dockerNetwork(resolveNetwork())
                 .podKubeconfig(podKubeconfig)
                 .namespace(namespace)
                 .artifactDrivers(drivers)
+                .volumes(volumes)
                 .build();
 
         // Download workflow-level HTTP input artifacts before execution starts

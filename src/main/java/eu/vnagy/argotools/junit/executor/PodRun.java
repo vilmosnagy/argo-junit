@@ -3,10 +3,14 @@ package eu.vnagy.argotools.junit.executor;
 import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.Backoff;
+import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1KeyToPath;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Probe;
+import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Volume;
+import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1VolumeMount;
 import eu.vnagy.argotools.junit.model.Parameter;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
+import org.testcontainers.containers.BindMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
@@ -24,6 +28,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Base64;
 import java.util.Set;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -53,6 +58,9 @@ public final class PodRun implements WorkflowNode {
     /** An env var whose value must be resolved from a ConfigMap or Secret at runtime. */
     private record EnvRef(String envName, boolean isSecret, String resourceName, String key) {}
 
+    /** A volume mount declared on the container/script template. */
+    private record VolumeMountSpec(String volumeName, String mountPath, String subPath, boolean readOnly) {}
+
     private final String name;
     // Plan fields — parsed from template at construction time
     private final String image;
@@ -65,6 +73,7 @@ public final class PodRun implements WorkflowNode {
     private final List<ArtifactSpec> inputArtifactDecls;
     private final List<ConfigMapRef> configMapRefs;
     private final List<EnvRef> envRefs;
+    private final List<VolumeMountSpec> volumeMountSpecs;
     // Retry plan fields
     private final int retryLimit;       // -1 = infinite
     private final RetryPolicy retryPolicy;
@@ -171,6 +180,20 @@ public final class PodRun implements WorkflowNode {
         }
         this.envRefs = List.copyOf(envRefList);
 
+        // volumeMounts — parsed from container or script template
+        var vmList = template.getScript() != null
+                ? template.getScript().getVolumeMounts()
+                : (template.getContainer() != null ? template.getContainer().getVolumeMounts() : null);
+        List<VolumeMountSpec> vms = new ArrayList<>();
+        if (vmList != null) {
+            for (var vm : vmList) {
+                vms.add(new VolumeMountSpec(
+                        vm.getName(), vm.getMountPath(), vm.getSubPath(),
+                        Boolean.TRUE.equals(vm.getReadOnly())));
+            }
+        }
+        this.volumeMountSpecs = List.copyOf(vms);
+
         // Retry strategy
         RetryStrategy rs = template.getRetryStrategy();
         if (rs == null) {
@@ -270,13 +293,15 @@ public final class PodRun implements WorkflowNode {
             }
         }
 
+        Map<String, Path> materializedVolumes = materializeVolumes(ctx, inputParams);
+
         this.attempts = 0;
         Duration currentBackoff = backoffDuration;
         Instant retryStart = Instant.now();
 
         while (true) {
             this.attempts++;
-            runAttempt(ctx, resolvedImage, resolvedCommand, resolvedScript, effectiveInputs, resolvedEnv);
+            runAttempt(ctx, resolvedImage, resolvedCommand, resolvedScript, effectiveInputs, resolvedEnv, materializedVolumes);
 
             boolean shouldRetry = switch (retryPolicy) {
                 case ON_FAILURE -> status == Status.FAILED;
@@ -374,7 +399,8 @@ public final class PodRun implements WorkflowNode {
     private void runAttempt(ExecutionContext ctx, String resolvedImage,
                             List<String> resolvedCommand, String resolvedScript,
                             Map<String, Path> effectiveInputs,
-                            Map<String, String> resolvedEnv) throws Exception {
+                            Map<String, String> resolvedEnv,
+                            Map<String, Path> materializedVolumes) throws Exception {
         @SuppressWarnings("resource")
         GenericContainer<?> cont = new GenericContainer<>(DockerImageName.parse(resolvedImage));
         if (!resolvedCommand.isEmpty()) {
@@ -450,6 +476,26 @@ public final class PodRun implements WorkflowNode {
             }
         }
 
+        // Bind-mount volumes
+        for (VolumeMountSpec mount : volumeMountSpecs) {
+            IoK8sApiCoreV1Volume vol = ctx.volumes.get(mount.volumeName());
+            if (vol == null) {
+                log.warn("Pod '{}': volume '{}' not found in workflow spec, skipping mount", name, mount.volumeName());
+                continue;
+            }
+            Path hostDir;
+            if (vol.getEmptyDir() != null) {
+                hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + mount.volumeName() + "-");
+            } else {
+                hostDir = materializedVolumes.get(mount.volumeName());
+                if (hostDir == null) continue;
+            }
+            Path mountSrc = mount.subPath() != null ? hostDir.resolve(mount.subPath()) : hostDir;
+            BindMode mode = mount.readOnly() ? BindMode.READ_ONLY : BindMode.READ_WRITE;
+            cont.withFileSystemBind(mountSrc.toString(), mount.mountPath(), mode);
+            log.debug("Pod '{}': volume '{}' bound '{}' → '{}'", name, mount.volumeName(), mountSrc, mount.mountPath());
+        }
+
         this.status = Status.RUNNING;
         Instant start = Instant.now();
         cont.start();
@@ -485,6 +531,96 @@ public final class PodRun implements WorkflowNode {
             this.container = cont;
             this.duration = elapsed;
             this.status = code == 0 ? Status.SUCCEEDED : Status.FAILED;
+        }
+    }
+
+    private Map<String, Path> materializeVolumes(ExecutionContext ctx, Map<String, String> inputParams)
+            throws Exception {
+        if (ctx.volumes.isEmpty() || volumeMountSpecs.isEmpty()) return Map.of();
+        Map<String, Path> result = new LinkedHashMap<>();
+        for (VolumeMountSpec mount : volumeMountSpecs) {
+            if (result.containsKey(mount.volumeName())) continue;
+            IoK8sApiCoreV1Volume vol = ctx.volumes.get(mount.volumeName());
+            if (vol == null || vol.getEmptyDir() != null) continue; // emptyDir is created fresh per attempt
+            Path hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + mount.volumeName() + "-");
+            if (vol.getConfigMap() != null) {
+                String cmName = ctx.substitute(vol.getConfigMap().getName(), inputParams);
+                populateFromConfigMap(hostDir, cmName, vol.getConfigMap().getItems(), ctx);
+            } else if (vol.getSecret() != null) {
+                String secretName = ctx.substitute(vol.getSecret().getSecretName(), inputParams);
+                populateFromSecret(hostDir, secretName, vol.getSecret().getItems(), ctx);
+            } else {
+                log.warn("Pod '{}': unsupported volume type for '{}', skipping", name, mount.volumeName());
+                continue;
+            }
+            result.put(mount.volumeName(), hostDir);
+        }
+        return Map.copyOf(result);
+    }
+
+    private void populateFromConfigMap(Path hostDir, String cmName,
+                                       List<IoK8sApiCoreV1KeyToPath> items, ExecutionContext ctx)
+            throws Exception {
+        if (ctx.k8sClient == null) throw new IllegalStateException(
+                "configMap volume requires a Kubernetes client — call withKwok() or getKubernetesClient()");
+        var cm = ctx.k8sClient.configMaps().inNamespace(ctx.namespace).withName(cmName).get();
+        if (cm == null) throw new IllegalStateException(
+                "ConfigMap '" + cmName + "' not found in namespace '" + ctx.namespace + "'");
+        Map<String, String> data = cm.getData() != null ? cm.getData() : Map.of();
+        writeVolumeStringFiles(hostDir, data, items);
+    }
+
+    private void populateFromSecret(Path hostDir, String secretName,
+                                    List<IoK8sApiCoreV1KeyToPath> items, ExecutionContext ctx)
+            throws Exception {
+        if (ctx.k8sClient == null) throw new IllegalStateException(
+                "secret volume requires a Kubernetes client — call withKwok() or getKubernetesClient()");
+        var secret = ctx.k8sClient.secrets().inNamespace(ctx.namespace).withName(secretName).get();
+        if (secret == null) throw new IllegalStateException(
+                "Secret '" + secretName + "' not found in namespace '" + ctx.namespace + "'");
+        if (items != null && !items.isEmpty()) {
+            Map<String, byte[]> decoded = new LinkedHashMap<>();
+            if (secret.getData() != null) {
+                for (var e : secret.getData().entrySet())
+                    decoded.put(e.getKey(), Base64.getDecoder().decode(e.getValue()));
+            }
+            writeVolumeBinaryFiles(hostDir, decoded, items);
+        } else {
+            if (secret.getData() != null) {
+                for (var e : secret.getData().entrySet()) {
+                    Files.write(hostDir.resolve(e.getKey()), Base64.getDecoder().decode(e.getValue()));
+                }
+            }
+        }
+    }
+
+    private static void writeVolumeStringFiles(Path hostDir, Map<String, String> data,
+                                               List<IoK8sApiCoreV1KeyToPath> items) throws Exception {
+        if (items != null && !items.isEmpty()) {
+            for (var item : items) {
+                String value = data.get(item.getKey());
+                if (value == null) continue;
+                Path target = hostDir.resolve(item.getPath()).normalize();
+                if (!target.startsWith(hostDir))
+                    throw new IllegalStateException("Volume item path traversal: " + item.getPath());
+                Files.createDirectories(target.getParent());
+                Files.writeString(target, value);
+            }
+        } else {
+            for (var e : data.entrySet()) Files.writeString(hostDir.resolve(e.getKey()), e.getValue());
+        }
+    }
+
+    private static void writeVolumeBinaryFiles(Path hostDir, Map<String, byte[]> data,
+                                               List<IoK8sApiCoreV1KeyToPath> items) throws Exception {
+        for (var item : items) {
+            byte[] value = data.get(item.getKey());
+            if (value == null) continue;
+            Path target = hostDir.resolve(item.getPath()).normalize();
+            if (!target.startsWith(hostDir))
+                throw new IllegalStateException("Secret volume item path traversal: " + item.getPath());
+            Files.createDirectories(target.getParent());
+            Files.write(target, value);
         }
     }
 

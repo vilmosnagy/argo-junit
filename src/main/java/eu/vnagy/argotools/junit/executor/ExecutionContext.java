@@ -2,6 +2,7 @@ package eu.vnagy.argotools.junit.executor;
 
 import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.model.Artifact;
+import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Volume;
 import eu.vnagy.argotools.junit.model.Template;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import org.slf4j.Logger;
@@ -73,6 +74,8 @@ final class ExecutionContext {
     final String namespace;
     // drivers for explicit artifact locations (s3:, gcs:, azure:); discovered via ServiceLoader
     final List<ArtifactDriver> artifactDrivers;
+    // volumeName -> volume spec for all volumes declared in the workflow spec
+    final Map<String, IoK8sApiCoreV1Volume> volumes;
 
     private ExecutionContext(Builder b) {
         this.templateMap = b.templateMap;
@@ -93,6 +96,7 @@ final class ExecutionContext {
         this.podKubeconfig = b.podKubeconfig;
         this.namespace = b.namespace;
         this.artifactDrivers = b.artifactDrivers;
+        this.volumes = b.volumes;
     }
 
     static Builder builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
@@ -118,6 +122,7 @@ final class ExecutionContext {
         b.podKubeconfig = podKubeconfig;
         b.namespace = namespace;
         b.artifactDrivers = artifactDrivers;
+        b.volumes = volumes;
         return b;
     }
 
@@ -130,6 +135,7 @@ final class ExecutionContext {
                 .namespace(namespace)
                 .artifactDrivers(artifactDrivers)
                 .tmpDir(tmpDir)
+                .volumes(volumes)
                 .build();
     }
 
@@ -304,6 +310,7 @@ final class ExecutionContext {
         private String podKubeconfig = null;
         private String namespace = "default";
         private List<ArtifactDriver> artifactDrivers = List.of();
+        private Map<String, IoK8sApiCoreV1Volume> volumes = Map.of();
 
         private Builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
                         ExecutorService threadPool) {
@@ -324,6 +331,10 @@ final class ExecutionContext {
         }
         Builder artifactDrivers(List<ArtifactDriver> v) {
             this.artifactDrivers = List.copyOf(v);
+            return this;
+        }
+        Builder volumes(Map<String, IoK8sApiCoreV1Volume> v) {
+            this.volumes = Map.copyOf(v);
             return this;
         }
 

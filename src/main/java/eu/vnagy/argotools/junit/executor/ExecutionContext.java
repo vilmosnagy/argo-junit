@@ -32,6 +32,10 @@ final class ExecutionContext {
             Pattern.compile("\\{\\{steps\\.([^.}]+)\\.ip\\}\\}");
     private static final Pattern TASK_IP =
             Pattern.compile("\\{\\{tasks\\.([^.}]+)\\.ip\\}\\}");
+    private static final Pattern STEP_OUTPUT_PARAM =
+            Pattern.compile("\\{\\{steps\\.([^.}]+)\\.outputs\\.parameters\\.([^}]+)\\}\\}");
+    private static final Pattern TASK_OUTPUT_PARAM =
+            Pattern.compile("\\{\\{tasks\\.([^.}]+)\\.outputs\\.parameters\\.([^}]+)\\}\\}");
     private static final Pattern INPUTS_PARAMETER =
             Pattern.compile("\\{\\{inputs\\.parameters\\.([^}]+)\\}\\}");
     private static final Pattern WORKFLOW_PARAMETER =
@@ -48,9 +52,11 @@ final class ExecutionContext {
     final ConcurrentHashMap<String, String> stepOutputResults;
     final ConcurrentHashMap<String, String> stepIps;
     final ConcurrentHashMap<String, String> taskIps;
-    // artifactName -> hostPath, registered after each step/task completes
     final ConcurrentHashMap<String, Map<String, Path>> stepArtifacts;
     final ConcurrentHashMap<String, Map<String, Path>> taskArtifacts;
+    // paramName -> value, registered after each step/task completes (from outputs.parameters[].valueFrom.path)
+    final ConcurrentHashMap<String, Map<String, String>> stepOutputParams;
+    final ConcurrentHashMap<String, Map<String, String>> taskOutputParams;
     // resolved input artifact paths for the current pod invocation (immutable per-pod)
     final Map<String, Path> inputArtifacts;
     // single root temp directory for all artifact files created during this run
@@ -68,64 +74,63 @@ final class ExecutionContext {
     // drivers for explicit artifact locations (s3:, gcs:, azure:); discovered via ServiceLoader
     final List<ArtifactDriver> artifactDrivers;
 
-    ExecutionContext(Map<String, Template> templateMap, Map<String, String> workflowParams,
-                    ExecutorService threadPool, KubernetesClient k8sClient,
-                    Network dockerNetwork, String podKubeconfig, String namespace,
-                    List<ArtifactDriver> artifactDrivers) {
-        this(templateMap, workflowParams, threadPool,
-                new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>(),
-                new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), Map.of(),
-                createTmpDir(), null, k8sClient, dockerNetwork, podKubeconfig, namespace,
-                artifactDrivers);
+    private ExecutionContext(Builder b) {
+        this.templateMap = b.templateMap;
+        this.workflowParams = b.workflowParams;
+        this.threadPool = b.threadPool;
+        this.stepOutputResults = b.stepOutputResults;
+        this.stepIps = b.stepIps;
+        this.taskIps = b.taskIps;
+        this.stepArtifacts = b.stepArtifacts;
+        this.taskArtifacts = b.taskArtifacts;
+        this.stepOutputParams = b.stepOutputParams;
+        this.taskOutputParams = b.taskOutputParams;
+        this.inputArtifacts = b.inputArtifacts;
+        this.tmpDir = b.tmpDir != null ? b.tmpDir : createTmpDir();
+        this.requestedOutputArtifacts = b.requestedOutputArtifacts;
+        this.k8sClient = b.k8sClient;
+        this.dockerNetwork = b.dockerNetwork;
+        this.podKubeconfig = b.podKubeconfig;
+        this.namespace = b.namespace;
+        this.artifactDrivers = b.artifactDrivers;
     }
 
-    private static Path createTmpDir() {
-        try {
-            return Files.createTempDirectory("argo-run-");
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+    static Builder builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
+                           ExecutorService threadPool) {
+        return new Builder(templateMap, workflowParams, threadPool);
     }
 
-    private ExecutionContext(Map<String, Template> templateMap, Map<String, String> workflowParams,
-                             ExecutorService threadPool,
-                             ConcurrentHashMap<String, String> stepOutputResults,
-                             ConcurrentHashMap<String, String> stepIps,
-                             ConcurrentHashMap<String, String> taskIps,
-                             ConcurrentHashMap<String, Map<String, Path>> stepArtifacts,
-                             ConcurrentHashMap<String, Map<String, Path>> taskArtifacts,
-                             Map<String, Path> inputArtifacts,
-                             Path tmpDir,
-                             Set<String> requestedOutputArtifacts,
-                             KubernetesClient k8sClient,
-                             Network dockerNetwork,
-                             String podKubeconfig,
-                             String namespace,
-                             List<ArtifactDriver> artifactDrivers) {
-        this.templateMap = templateMap;
-        this.workflowParams = workflowParams;
-        this.threadPool = threadPool;
-        this.stepOutputResults = stepOutputResults;
-        this.stepIps = stepIps;
-        this.taskIps = taskIps;
-        this.stepArtifacts = stepArtifacts;
-        this.taskArtifacts = taskArtifacts;
-        this.inputArtifacts = inputArtifacts;
-        this.tmpDir = tmpDir;
-        this.requestedOutputArtifacts = requestedOutputArtifacts;
-        this.k8sClient = k8sClient;
-        this.dockerNetwork = dockerNetwork;
-        this.podKubeconfig = podKubeconfig;
-        this.namespace = namespace;
-        this.artifactDrivers = List.copyOf(artifactDrivers);
+    /** Returns a builder pre-populated with all fields from this context (scope maps by reference). */
+    Builder toBuilder() {
+        Builder b = new Builder(templateMap, workflowParams, threadPool);
+        b.stepOutputResults = stepOutputResults;
+        b.stepIps = stepIps;
+        b.taskIps = taskIps;
+        b.stepArtifacts = stepArtifacts;
+        b.taskArtifacts = taskArtifacts;
+        b.stepOutputParams = stepOutputParams;
+        b.taskOutputParams = taskOutputParams;
+        b.inputArtifacts = inputArtifacts;
+        b.tmpDir = tmpDir;
+        b.requestedOutputArtifacts = requestedOutputArtifacts;
+        b.k8sClient = k8sClient;
+        b.dockerNetwork = dockerNetwork;
+        b.podKubeconfig = podKubeconfig;
+        b.namespace = namespace;
+        b.artifactDrivers = artifactDrivers;
+        return b;
     }
 
-    /** Fresh scope for a sub-workflow execution — inherits global maps, resets local ones. */
+    /** Fresh scope for a sub-workflow execution — shares infrastructure, creates new scope maps. */
     ExecutionContext childScope() {
-        return new ExecutionContext(templateMap, workflowParams, threadPool,
-                new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>(),
-                new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), Map.of(),
-                tmpDir, null, k8sClient, dockerNetwork, podKubeconfig, namespace, artifactDrivers);
+        return builder(templateMap, workflowParams, threadPool)
+                .k8sClient(k8sClient)
+                .dockerNetwork(dockerNetwork)
+                .podKubeconfig(podKubeconfig)
+                .namespace(namespace)
+                .artifactDrivers(artifactDrivers)
+                .tmpDir(tmpDir)
+                .build();
     }
 
     /**
@@ -133,22 +138,16 @@ final class ExecutionContext {
      * Shares all scope maps with the parent (so outputs registered here are visible to the parent).
      */
     ExecutionContext withInputArtifacts(Map<String, Path> artifacts) {
-        return new ExecutionContext(templateMap, workflowParams, threadPool,
-                stepOutputResults, stepIps, taskIps,
-                stepArtifacts, taskArtifacts,
-                Map.copyOf(artifacts),
-                tmpDir, requestedOutputArtifacts, k8sClient, dockerNetwork, podKubeconfig, namespace,
-                artifactDrivers);
+        return toBuilder()
+                .inputArtifacts(artifacts)
+                .build();
     }
 
     /** Returns a view of this context specifying which output artifact names the pod should collect. */
     ExecutionContext withRequestedOutputArtifacts(Set<String> names) {
-        return new ExecutionContext(templateMap, workflowParams, threadPool,
-                stepOutputResults, stepIps, taskIps,
-                stepArtifacts, taskArtifacts,
-                inputArtifacts,
-                tmpDir, Set.copyOf(names), k8sClient, dockerNetwork, podKubeconfig, namespace,
-                artifactDrivers);
+        return toBuilder()
+                .requestedOutputArtifacts(names)
+                .build();
     }
 
     /** Returns the first driver that handles the given artifact's location type, if any. */
@@ -197,6 +196,8 @@ final class ExecutionContext {
         String result = applyPattern(expr, STEP_OUTPUT_RESULT, stepOutputResults);
         result = applyPattern(result, STEP_IP, stepIps);
         result = applyPattern(result, TASK_IP, taskIps);
+        result = applyNestedPattern(result, STEP_OUTPUT_PARAM, stepOutputParams);
+        result = applyNestedPattern(result, TASK_OUTPUT_PARAM, taskOutputParams);
         result = applyPattern(result, INPUTS_PARAMETER, inputParams);
         result = applyPattern(result, WORKFLOW_PARAMETER, workflowParams);
         if (!result.equals(expr)) {
@@ -234,5 +235,80 @@ final class ExecutionContext {
         }
         m.appendTail(sb);
         return sb.toString();
+    }
+
+    private String applyNestedPattern(String expr, Pattern pattern,
+                                      Map<String, Map<String, String>> values) {
+        Matcher m = pattern.matcher(expr);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            Map<String, String> inner = values.get(m.group(1));
+            String value = inner != null ? inner.getOrDefault(m.group(2), m.group(0)) : m.group(0);
+            m.appendReplacement(sb, Matcher.quoteReplacement(value));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    private static Path createTmpDir() {
+        try {
+            return Files.createTempDirectory("argo-run-");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+
+    static final class Builder {
+
+        private final Map<String, Template> templateMap;
+        private final Map<String, String> workflowParams;
+        private final ExecutorService threadPool;
+
+        // Scope maps — fresh instances by default; toBuilder() replaces these with existing refs
+        private ConcurrentHashMap<String, String> stepOutputResults = new ConcurrentHashMap<>();
+        private ConcurrentHashMap<String, String> stepIps = new ConcurrentHashMap<>();
+        private ConcurrentHashMap<String, String> taskIps = new ConcurrentHashMap<>();
+        private ConcurrentHashMap<String, Map<String, Path>> stepArtifacts = new ConcurrentHashMap<>();
+        private ConcurrentHashMap<String, Map<String, Path>> taskArtifacts = new ConcurrentHashMap<>();
+        private ConcurrentHashMap<String, Map<String, String>> stepOutputParams = new ConcurrentHashMap<>();
+        private ConcurrentHashMap<String, Map<String, String>> taskOutputParams = new ConcurrentHashMap<>();
+
+        // Per-pod fields
+        private Map<String, Path> inputArtifacts = Map.of();
+        private Set<String> requestedOutputArtifacts = null;
+
+        // Infrastructure — null/default until explicitly set
+        private Path tmpDir = null;          // null → createTmpDir() at build() time
+        private KubernetesClient k8sClient = null;
+        private Network dockerNetwork = null;
+        private String podKubeconfig = null;
+        private String namespace = "default";
+        private List<ArtifactDriver> artifactDrivers = List.of();
+
+        private Builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
+                        ExecutorService threadPool) {
+            this.templateMap = templateMap;
+            this.workflowParams = workflowParams;
+            this.threadPool = threadPool;
+        }
+
+        Builder k8sClient(KubernetesClient v)       { this.k8sClient = v; return this; }
+        Builder dockerNetwork(Network v)             { this.dockerNetwork = v; return this; }
+        Builder podKubeconfig(String v)              { this.podKubeconfig = v; return this; }
+        Builder namespace(String v)                  { this.namespace = v; return this; }
+        Builder tmpDir(Path v)                       { this.tmpDir = v; return this; }
+        Builder inputArtifacts(Map<String, Path> v)  { this.inputArtifacts = Map.copyOf(v); return this; }
+        Builder requestedOutputArtifacts(Set<String> v) {
+            this.requestedOutputArtifacts = v != null ? Set.copyOf(v) : null;
+            return this;
+        }
+        Builder artifactDrivers(List<ArtifactDriver> v) {
+            this.artifactDrivers = List.copyOf(v);
+            return this;
+        }
+
+        ExecutionContext build() { return new ExecutionContext(this); }
     }
 }

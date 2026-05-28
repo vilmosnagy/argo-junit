@@ -135,6 +135,12 @@ public final class StepsRun implements WorkflowNode {
                                                         spec.name(), artifacts.size());
                                                 localCtx.stepArtifacts.put(spec.name(), artifacts);
                                             }
+                                            Map<String, String> outParams = pod.collectedOutputParams();
+                                            if (!outParams.isEmpty()) {
+                                                log.debug("Step '{}': {} output parameter(s) collected",
+                                                        spec.name(), outParams.size());
+                                                localCtx.stepOutputParams.put(spec.name(), outParams);
+                                            }
                                         }
                                         return result;
                                     }));

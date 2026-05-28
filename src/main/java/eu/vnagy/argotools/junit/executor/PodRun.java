@@ -4,6 +4,7 @@ import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.Backoff;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Probe;
+import eu.vnagy.argotools.junit.model.Parameter;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import org.slf4j.Logger;
@@ -21,6 +22,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Set;
 import java.nio.file.Path;
@@ -44,6 +46,8 @@ public final class PodRun implements WorkflowNode {
 
     private record ArtifactSpec(String name, String path, Integer mode, Artifact artifact) {}
 
+    private record OutputParamSpec(String name, String path, String defaultValue) {}
+
     private record ConfigMapRef(String paramName, String cmName, String key) {}
 
     private final String name;
@@ -54,6 +58,7 @@ public final class PodRun implements WorkflowNode {
     private final boolean daemon;
     private final IoK8sApiCoreV1Probe readinessProbe;
     private final List<ArtifactSpec> outputArtifactSpecs;
+    private final List<OutputParamSpec> outputParamSpecs;
     private final List<ArtifactSpec> inputArtifactDecls;
     private final List<ConfigMapRef> configMapRefs;
     // Retry plan fields
@@ -74,6 +79,7 @@ public final class PodRun implements WorkflowNode {
     private volatile boolean daemonStopped;
     private volatile int attempts;
     private volatile Map<String, Path> collectedArtifacts = Map.of();
+    private volatile Map<String, String> collectedOutputParams = Map.of();
 
     /** Plan constructor: parses the template once so executeAsync never touches argo model classes. */
     PodRun(String name, Template template) {
@@ -107,6 +113,18 @@ public final class PodRun implements WorkflowNode {
             }
         }
         this.outputArtifactSpecs = List.copyOf(outs);
+
+        // Output parameter specs — read file content from the container after it exits
+        List<OutputParamSpec> outParams = new ArrayList<>();
+        if (template.getOutputs() != null && template.getOutputs().getParameters() != null) {
+            for (Parameter p : template.getOutputs().getParameters()) {
+                if (p.getValueFrom() != null && p.getValueFrom().getPath() != null) {
+                    outParams.add(new OutputParamSpec(
+                            p.getName(), p.getValueFrom().getPath(), p.getValueFrom().getDefault()));
+                }
+            }
+        }
+        this.outputParamSpecs = List.copyOf(outParams);
 
         // Input artifact declarations — mode is applied when copying into the container
         List<ArtifactSpec> ins = new ArrayList<>();
@@ -294,6 +312,29 @@ public final class PodRun implements WorkflowNode {
                 this.collectedArtifacts = Map.copyOf(collected);
             }
         }
+
+        // Collect output parameters (file-backed) after a successful run
+        if (!daemon && this.container != null && this.status == Status.SUCCEEDED
+                && !outputParamSpecs.isEmpty()) {
+            Map<String, String> params = new LinkedHashMap<>();
+            for (OutputParamSpec spec : outputParamSpecs) {
+                try {
+                    String value = readFileFromContainer(this.container, spec.path());
+                    params.put(spec.name(), value);
+                    log.debug("Pod '{}': output parameter '{}' = '{}'", name, spec.name(), value);
+                } catch (Exception e) {
+                    if (spec.defaultValue() != null) {
+                        params.put(spec.name(), spec.defaultValue());
+                        log.debug("Pod '{}': output parameter '{}' defaulted to '{}'",
+                                name, spec.name(), spec.defaultValue());
+                    } else {
+                        log.warn("Pod '{}': failed to read output parameter '{}' from '{}'",
+                                name, spec.name(), spec.path(), e);
+                    }
+                }
+            }
+            this.collectedOutputParams = Map.copyOf(params);
+        }
     }
 
     private void runAttempt(ExecutionContext ctx, String resolvedImage,
@@ -409,6 +450,20 @@ public final class PodRun implements WorkflowNode {
         }
     }
 
+    private String readFileFromContainer(GenericContainer<?> cont, String containerPath) throws Exception {
+        try (InputStream tarStream = cont.getDockerClient()
+                     .copyArchiveFromContainerCmd(cont.getContainerId(), containerPath).exec();
+             TarArchiveInputStream tarInput = new TarArchiveInputStream(tarStream)) {
+            TarArchiveEntry entry;
+            while ((entry = tarInput.getNextTarEntry()) != null) {
+                if (!entry.isDirectory()) {
+                    return new String(tarInput.readAllBytes(), StandardCharsets.UTF_8).trim();
+                }
+            }
+        }
+        throw new IllegalStateException("No file content at '" + containerPath + "'");
+    }
+
     /**
      * Extracts a container artifact into a temp directory using the raw Docker TAR API.
      * Supports both file and directory artifacts; returns the path of the single top-level
@@ -482,7 +537,8 @@ public final class PodRun implements WorkflowNode {
     public Optional<String> ip()             { return Optional.ofNullable(ip); }
     public boolean isDaemonStopped()         { return daemonStopped; }
     public int attempts()                    { return attempts; }
-    public Map<String, Path> collectedArtifacts() { return collectedArtifacts; }
+    public Map<String, Path> collectedArtifacts()      { return collectedArtifacts; }
+    public Map<String, String> collectedOutputParams() { return collectedOutputParams; }
     /** The stopped container. Logs and state remain accessible until Ryuk removes it. */
     public GenericContainer<?> container() { return container; }
     public Duration duration()             { return duration; }

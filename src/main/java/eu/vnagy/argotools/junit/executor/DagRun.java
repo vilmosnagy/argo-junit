@@ -151,6 +151,12 @@ public final class DagRun implements WorkflowNode {
                                 name, spec.name(), artifacts.size());
                         localCtx.taskArtifacts.put(spec.name(), artifacts);
                     }
+                    Map<String, String> outParams = pod.collectedOutputParams();
+                    if (!outParams.isEmpty()) {
+                        log.debug("Dag '{}': task '{}' {} output parameter(s) collected",
+                                name, spec.name(), outParams.size());
+                        localCtx.taskOutputParams.put(spec.name(), outParams);
+                    }
                 }
                 return result;
             });

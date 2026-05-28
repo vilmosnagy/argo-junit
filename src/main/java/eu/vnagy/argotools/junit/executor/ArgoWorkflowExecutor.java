@@ -273,8 +273,13 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 .map(ServiceLoader.Provider::get)
                 .collect(Collectors.toList());
 
-        ExecutionContext ctx = new ExecutionContext(templateMap, workflowParams, threadPool,
-                k8sClient, resolveNetwork(), podKubeconfig, namespace, drivers);
+        ExecutionContext ctx = ExecutionContext.builder(templateMap, workflowParams, threadPool)
+                .k8sClient(k8sClient)
+                .dockerNetwork(resolveNetwork())
+                .podKubeconfig(podKubeconfig)
+                .namespace(namespace)
+                .artifactDrivers(drivers)
+                .build();
 
         // Download workflow-level HTTP input artifacts before execution starts
         Map<String, Path> workflowArtifacts = downloadWorkflowArtifacts(ctx.tmpDir);

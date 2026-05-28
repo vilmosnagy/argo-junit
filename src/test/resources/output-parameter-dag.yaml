@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: output-parameter-dag-
+spec:
+  entrypoint: output-parameter-dag
+  templates:
+  - name: output-parameter-dag
+    dag:
+      tasks:
+      - name: generate-parameter
+        template: hello-world-to-file
+      - name: consume-parameter
+        template: print-message
+        depends: generate-parameter
+        arguments:
+          parameters:
+          - name: message
+            value: "{{tasks.generate-parameter.outputs.parameters.hello-param}}"
+
+  - name: hello-world-to-file
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["echo -n hello world > /tmp/hello_world.txt"]
+    outputs:
+      parameters:
+      - name: hello-param
+        valueFrom:
+          default: "Foobar"
+          path: /tmp/hello_world.txt
+
+  - name: print-message
+    inputs:
+      parameters:
+      - name: message
+    container:
+      image: busybox
+      command: [echo]
+      args: ["{{inputs.parameters.message}}"]

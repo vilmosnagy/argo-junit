@@ -50,6 +50,9 @@ public final class PodRun implements WorkflowNode {
 
     private record ConfigMapRef(String paramName, String cmName, String key) {}
 
+    /** An env var whose value must be resolved from a ConfigMap or Secret at runtime. */
+    private record EnvRef(String envName, boolean isSecret, String resourceName, String key) {}
+
     private final String name;
     // Plan fields — parsed from template at construction time
     private final String image;
@@ -61,6 +64,7 @@ public final class PodRun implements WorkflowNode {
     private final List<OutputParamSpec> outputParamSpecs;
     private final List<ArtifactSpec> inputArtifactDecls;
     private final List<ConfigMapRef> configMapRefs;
+    private final List<EnvRef> envRefs;
     // Retry plan fields
     private final int retryLimit;       // -1 = infinite
     private final RetryPolicy retryPolicy;
@@ -147,6 +151,26 @@ public final class PodRun implements WorkflowNode {
         }
         this.configMapRefs = List.copyOf(cmRefs);
 
+        // env[].valueFrom.configMapKeyRef / secretKeyRef — resolved from the Kubernetes API at runtime
+        var envVars = template.getScript() != null
+                ? template.getScript().getEnv()
+                : (template.getContainer() != null ? template.getContainer().getEnv() : null);
+        List<EnvRef> envRefList = new ArrayList<>();
+        if (envVars != null) {
+            for (var e : envVars) {
+                if (e.getValueFrom() == null) continue;
+                var src = e.getValueFrom();
+                if (src.getConfigMapKeyRef() != null) {
+                    var ref = src.getConfigMapKeyRef();
+                    envRefList.add(new EnvRef(e.getName(), false, ref.getName(), ref.getKey()));
+                } else if (src.getSecretKeyRef() != null) {
+                    var ref = src.getSecretKeyRef();
+                    envRefList.add(new EnvRef(e.getName(), true, ref.getName(), ref.getKey()));
+                }
+            }
+        }
+        this.envRefs = List.copyOf(envRefList);
+
         // Retry strategy
         RetryStrategy rs = template.getRetryStrategy();
         if (rs == null) {
@@ -221,6 +245,16 @@ public final class PodRun implements WorkflowNode {
 
         log.debug("Pod '{}': starting image='{}' command={}", name, resolvedImage, resolvedCommand);
 
+        // Resolve env vars from ConfigMap / Secret references before the retry loop
+        Map<String, String> resolvedEnv = new LinkedHashMap<>();
+        for (EnvRef ref : envRefs) {
+            String resolvedName = ctx.substitute(ref.resourceName(), inputParams);
+            String resolvedKey  = ctx.substitute(ref.key(), inputParams);
+            resolvedEnv.put(ref.envName(), ref.isSecret()
+                    ? ctx.resolveSecretKey(ctx.namespace, resolvedName, resolvedKey)
+                    : ctx.resolveConfigMapKey(ctx.namespace, resolvedName, resolvedKey));
+        }
+
         // Download external input artifacts (S3, etc.) onto the host before the retry loop
         Map<String, Path> effectiveInputs = new LinkedHashMap<>(ctx.inputArtifacts);
         for (ArtifactSpec decl : inputArtifactDecls) {
@@ -242,7 +276,7 @@ public final class PodRun implements WorkflowNode {
 
         while (true) {
             this.attempts++;
-            runAttempt(ctx, resolvedImage, resolvedCommand, resolvedScript, effectiveInputs);
+            runAttempt(ctx, resolvedImage, resolvedCommand, resolvedScript, effectiveInputs, resolvedEnv);
 
             boolean shouldRetry = switch (retryPolicy) {
                 case ON_FAILURE -> status == Status.FAILED;
@@ -339,7 +373,8 @@ public final class PodRun implements WorkflowNode {
 
     private void runAttempt(ExecutionContext ctx, String resolvedImage,
                             List<String> resolvedCommand, String resolvedScript,
-                            Map<String, Path> effectiveInputs) throws Exception {
+                            Map<String, Path> effectiveInputs,
+                            Map<String, String> resolvedEnv) throws Exception {
         @SuppressWarnings("resource")
         GenericContainer<?> cont = new GenericContainer<>(DockerImageName.parse(resolvedImage));
         if (!resolvedCommand.isEmpty()) {
@@ -358,6 +393,9 @@ public final class PodRun implements WorkflowNode {
             cont.withCopyFileToContainer(MountableFile.forHostPath(kubeconfigFile), "/tmp/kwok-kubeconfig.yaml");
             cont.withEnv("KUBECONFIG", "/tmp/kwok-kubeconfig.yaml");
         }
+
+        // Inject env vars resolved from ConfigMap / Secret references
+        resolvedEnv.forEach(cont::withEnv);
 
         if (daemon) {
             if (readinessProbe != null && readinessProbe.getHttpGet() != null) {

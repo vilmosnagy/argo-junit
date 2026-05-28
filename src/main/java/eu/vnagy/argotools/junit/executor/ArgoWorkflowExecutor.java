@@ -246,7 +246,14 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         if (workflow.getSpec().getArguments() != null &&
                 workflow.getSpec().getArguments().getParameters() != null) {
             for (Parameter p : workflow.getSpec().getArguments().getParameters()) {
-                if (p.getValue() != null) workflowParams.put(p.getName(), p.getValue());
+                if (p.getValue() != null) {
+                    workflowParams.put(p.getName(), p.getValue());
+                } else if (p.getValueFrom() != null && p.getValueFrom().getConfigMapKeyRef() != null) {
+                    // secretKeyRef is intentionally absent: Argo's Parameter.valueFrom does not
+                    // support it — secretKeyRef is only valid on container env entries (k8s feature).
+                    var ref = p.getValueFrom().getConfigMapKeyRef();
+                    workflowParams.put(p.getName(), resolveWorkflowConfigMapKey(ref.getName(), ref.getKey()));
+                }
             }
         }
 
@@ -287,7 +294,9 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 ? ctx : ctx.withInputArtifacts(workflowArtifacts);
 
         WorkflowNode root = WorkflowNode.from(entrypointName, entrypointTemplate, templateMap, Set.of());
-        CompletableFuture<Void> future = root.executeAsync(rootCtx, Map.of())
+        // Workflow arguments are the initial input parameters for the entrypoint, matching Argo semantics:
+        // a template's {{inputs.parameters.X}} at the entrypoint level resolves from workflow arguments.
+        CompletableFuture<Void> future = root.executeAsync(rootCtx, workflowParams)
                 .thenAccept(_ -> {})
                 .whenComplete((_, _) -> threadPool.shutdown());
 
@@ -412,6 +421,19 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 }
             }
         }
+    }
+
+    private String resolveWorkflowConfigMapKey(String configMapName, String key) {
+        if (k8sClient == null) throw new IllegalStateException(
+                "workflow.arguments.parameters[].valueFrom.configMapKeyRef requires a Kubernetes client"
+                + " — call getKubernetesClient() or withKwok() before execute()");
+        var cm = k8sClient.configMaps().inNamespace(namespace).withName(configMapName).get();
+        if (cm == null) throw new IllegalStateException(
+                "ConfigMap '" + configMapName + "' not found in namespace '" + namespace + "'");
+        var data = cm.getData();
+        if (data == null || !data.containsKey(key)) throw new IllegalStateException(
+                "Key '" + key + "' not found in ConfigMap '" + configMapName + "'");
+        return data.get(key);
     }
 
     private Map<String, Path> downloadWorkflowArtifacts(Path tmpDir) {

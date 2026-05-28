@@ -192,6 +192,24 @@ final class ExecutionContext {
         return data.get(key);
     }
 
+    /**
+     * Resolves a Secret key from the Kubernetes API (kwok).
+     * Secret data values are base64-encoded in the API; this method decodes them.
+     * Fails fast with a clear error if no client was provided.
+     */
+    String resolveSecretKey(String namespace, String secretName, String key) {
+        if (k8sClient == null) throw new IllegalStateException(
+                "secretKeyRef requires a Kubernetes client — call"
+                + " ArgoWorkflowExecutor.getKubernetesClient() before execute()");
+        var secret = k8sClient.secrets().inNamespace(namespace).withName(secretName).get();
+        if (secret == null) throw new IllegalStateException(
+                "Secret '" + secretName + "' not found in namespace '" + namespace + "'");
+        var data = secret.getData();
+        if (data == null || !data.containsKey(key)) throw new IllegalStateException(
+                "Key '" + key + "' not found in Secret '" + secretName + "'");
+        return new String(java.util.Base64.getDecoder().decode(data.get(key)));
+    }
+
     String substitute(String expr, Map<String, String> inputParams) {
         String result = applyPattern(expr, STEP_OUTPUT_RESULT, stepOutputResults);
         result = applyPattern(result, STEP_IP, stepIps);

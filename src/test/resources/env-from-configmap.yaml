@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: env-from-configmap-
+spec:
+  entrypoint: print-env
+  templates:
+  - name: print-env
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["echo greeting=$GREETING"]
+      env:
+      - name: GREETING
+        valueFrom:
+          configMapKeyRef:
+            name: greetings
+            key: greeting

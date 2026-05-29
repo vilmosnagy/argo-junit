@@ -11,6 +11,7 @@ import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Volume;
 import eu.vnagy.argotools.junit.model.Parameter;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
+import eu.vnagy.argotools.junit.model.TemplateRef;
 import eu.vnagy.argotools.junit.model.Workflow;
 import eu.vnagy.argotools.junit.model.WorkflowStep;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
@@ -288,7 +289,7 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         log.debug("Templates: {}", templateMap.keySet());
 
         if (k8sClient != null) {
-            templateMap.putAll(resolveTemplateRefs(Collections.unmodifiableMap(templateMap)));
+            templateMap.putAll(resolveTemplateRefs(Collections.unmodifiableMap(templateMap), entrypointName));
         }
 
         Template entrypointTemplate = templateMap.get(entrypointName);
@@ -395,69 +396,122 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
     }
 
     /**
-     * Fetches all WorkflowTemplates referenced (directly or transitively) by templateRef fields
-     * in {@code workflowTemplates} and returns a new map containing the original entries plus
-     * one composite-key entry per fetched template.
+     * Fetches all WorkflowTemplates transitively reachable from {@code entrypointName} and
+     * returns a map of {@code "wtName/templateName"} entries ready to merge into the local
+     * template map.
      *
-     * <p>Each fetched template is stored under {@code "WorkflowTemplateName/templateName"}.
-     * Plain-name (local sibling) references within a WorkflowTemplate are resolved at
-     * construction time via the {@code owningWt} parameter threaded through
-     * {@link WorkflowNode#from} — no plain-name entries are written here.
+     * <p>Only templates reachable via the actual call graph are resolved; templateRefs that
+     * exist in installed WorkflowTemplates but are never reached from the entrypoint are
+     * silently ignored, so tests do not need to install every transitively-mentioned WT.
      */
-    private Map<String, Template> resolveTemplateRefs(Map<String, Template> workflowTemplates) {
+    private Map<String, Template> resolveTemplateRefs(Map<String, Template> workflowTemplates,
+                                                       String entrypointName) {
         Map<String, Template> result = new LinkedHashMap<>();
-        Set<String> fetchedWTs = new java.util.LinkedHashSet<>();
-        Queue<String> toFetch = new ArrayDeque<>();
+        // WT name -> { templateName -> Template } (all templates in a fetched WT, cached)
+        Map<String, Map<String, Template>> loadedWTs = new LinkedHashMap<>();
+        Set<String> visitedLocal = new LinkedHashSet<>();   // workflow-local template names
+        Set<String> visitedWTKeys = new LinkedHashSet<>();  // "wtName/templateName" composite keys
+        Queue<String> localQueue = new ArrayDeque<>();
+        Queue<String> wtKeyQueue = new ArrayDeque<>();
 
-        for (Template t : workflowTemplates.values()) {
-            collectTemplateRefs(t, fetchedWTs, toFetch);
+        visitedLocal.add(entrypointName);
+        localQueue.add(entrypointName);
+
+        while (!localQueue.isEmpty() || !wtKeyQueue.isEmpty()) {
+            while (!localQueue.isEmpty()) {
+                String localName = localQueue.poll();
+                Template t = workflowTemplates.get(localName);
+                if (t != null) scanReachableRefs(t, null, loadedWTs, visitedLocal, visitedWTKeys,
+                                                 localQueue, wtKeyQueue, result);
+            }
+            while (!wtKeyQueue.isEmpty()) {
+                String key = wtKeyQueue.poll();
+                int slash = key.indexOf('/');
+                String wtName = key.substring(0, slash);
+                String tmplName = key.substring(slash + 1);
+                Template t = loadedWTs.getOrDefault(wtName, Map.of()).get(tmplName);
+                if (t != null) scanReachableRefs(t, wtName, loadedWTs, visitedLocal, visitedWTKeys,
+                                                 localQueue, wtKeyQueue, result);
+            }
         }
+        return result;
+    }
 
-        while (!toFetch.isEmpty()) {
-            String wtName = toFetch.poll();
+    private void scanReachableRefs(Template t, String owningWt,
+                                    Map<String, Map<String, Template>> loadedWTs,
+                                    Set<String> visitedLocal, Set<String> visitedWTKeys,
+                                    Queue<String> localQueue, Queue<String> wtKeyQueue,
+                                    Map<String, Template> result) {
+        if (t.getSteps() != null) {
+            for (List<WorkflowStep> group : t.getSteps()) {
+                for (WorkflowStep step : group) {
+                    scheduleRef(step.getTemplate(), step.getTemplateRef(), owningWt,
+                                loadedWTs, visitedLocal, visitedWTKeys, localQueue, wtKeyQueue, result);
+                }
+            }
+        }
+        if (t.getDag() != null && t.getDag().getTasks() != null) {
+            for (DAGTask task : t.getDag().getTasks()) {
+                scheduleRef(task.getTemplate(), task.getTemplateRef(), owningWt,
+                            loadedWTs, visitedLocal, visitedWTKeys, localQueue, wtKeyQueue, result);
+            }
+        }
+    }
+
+    private void scheduleRef(String inlineName, TemplateRef templateRef, String owningWt,
+                              Map<String, Map<String, Template>> loadedWTs,
+                              Set<String> visitedLocal, Set<String> visitedWTKeys,
+                              Queue<String> localQueue, Queue<String> wtKeyQueue,
+                              Map<String, Template> result) {
+        if (inlineName != null) {
+            if (owningWt != null) {
+                // Sibling reference within a WorkflowTemplate — resolve under the same WT
+                scheduleWTKey(owningWt, inlineName, loadedWTs, visitedWTKeys, wtKeyQueue, result);
+            } else {
+                if (visitedLocal.add(inlineName)) localQueue.add(inlineName);
+            }
+        }
+        if (templateRef != null) {
+            scheduleWTKey(templateRef.getName(), templateRef.getTemplate(),
+                          loadedWTs, visitedWTKeys, wtKeyQueue, result);
+        }
+    }
+
+    private void scheduleWTKey(String wtName, String tmplName,
+                                Map<String, Map<String, Template>> loadedWTs,
+                                Set<String> visitedWTKeys,
+                                Queue<String> wtKeyQueue,
+                                Map<String, Template> result) {
+        String key = wtName + "/" + tmplName;
+        if (!visitedWTKeys.add(key)) return;
+
+        if (!loadedWTs.containsKey(wtName)) {
             log.debug("Fetching WorkflowTemplate '{}'", wtName);
-
             GenericKubernetesResource wt = k8sClient
                     .genericKubernetesResources(WORKFLOW_TEMPLATE_CTX)
                     .inNamespace(namespace).withName(wtName).get();
             if (wt == null) throw new IllegalStateException(
                     "templateRef requires WorkflowTemplate '" + wtName + "' but it was not found"
                     + " in namespace '" + namespace + "'");
-
             @SuppressWarnings("unchecked")
             Map<String, Object> spec = (Map<String, Object>) wt.getAdditionalProperties().get("spec");
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> rawTemplates =
                     spec == null ? null : (List<Map<String, Object>>) spec.get("templates");
-            if (rawTemplates == null) continue;
-
-            for (Map<String, Object> raw : rawTemplates) {
-                Template t = JSON.convertValue(raw, Template.class);
-                result.put(wtName + "/" + t.getName(), t);
-                collectTemplateRefs(t, fetchedWTs, toFetch);
-            }
-        }
-        return result;
-    }
-
-    private static void collectTemplateRefs(Template t, Set<String> seen, Queue<String> toFetch) {
-        if (t.getSteps() != null) {
-            for (List<WorkflowStep> group : t.getSteps()) {
-                for (WorkflowStep step : group) {
-                    if (step.getTemplateRef() != null) {
-                        String wtName = step.getTemplateRef().getName();
-                        if (seen.add(wtName)) toFetch.add(wtName);
-                    }
+            Map<String, Template> wtTemplates = new LinkedHashMap<>();
+            if (rawTemplates != null) {
+                for (Map<String, Object> raw : rawTemplates) {
+                    Template tmpl = JSON.convertValue(raw, Template.class);
+                    wtTemplates.put(tmpl.getName(), tmpl);
                 }
             }
+            loadedWTs.put(wtName, wtTemplates);
         }
-        if (t.getDag() != null && t.getDag().getTasks() != null) {
-            for (DAGTask task : t.getDag().getTasks()) {
-                if (task.getTemplateRef() != null) {
-                    String wtName = task.getTemplateRef().getName();
-                    if (seen.add(wtName)) toFetch.add(wtName);
-                }
-            }
+
+        Template t = loadedWTs.get(wtName).get(tmplName);
+        if (t != null) {
+            result.put(key, t);
+            wtKeyQueue.add(key);
         }
     }
 

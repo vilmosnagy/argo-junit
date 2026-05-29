@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -81,8 +82,22 @@ class ArgoLintTest {
     }
 
     /**
+     * Directories whose fixtures intentionally contain unresolvable references and must be
+     * excluded from the offline lint sweep.
+     *
+     * <ul>
+     *   <li>{@code wftemplate/unreachable-ref} — the "unused-template" in {@code utils-wt.yaml}
+     *       deliberately references a WorkflowTemplate that is never installed; that is exactly
+     *       the scenario the {@code UnreachableTemplateRefTest} covers.</li>
+     * </ul>
+     */
+    private static final Set<Path> LINT_SKIP_DIRS = Set.of(
+            Path.of("src/test/resources/wftemplate/unreachable-ref")
+    );
+
+    /**
      * Every custom fixture under {@code src/test/resources/} (the {@code examples/} submodule
-     * symlink is excluded) must pass {@code argo lint --offline}.
+     * symlink and any {@link #LINT_SKIP_DIRS} are excluded) must pass {@code argo lint --offline}.
      *
      * <p>Files are linted per directory so that workflows referencing sibling WorkflowTemplates
      * can be resolved offline — {@code argo lint --offline} resolves cross-references only from
@@ -101,6 +116,7 @@ class ArgoLintTest {
         return Files.walk(root)
                 .filter(p -> p.toString().endsWith(".yaml"))
                 .filter(p -> !p.startsWith(examples))
+                .filter(p -> LINT_SKIP_DIRS.stream().noneMatch(p::startsWith))
                 .collect(Collectors.groupingBy(Path::getParent))
                 .entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())

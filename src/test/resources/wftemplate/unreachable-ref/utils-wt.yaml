@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: utils
+  namespace: default
+spec:
+  templates:
+    - name: used-template
+      script:
+        image: alpine
+        command: [sh]
+        source: echo done
+
+    - name: unused-template
+      dag:
+        tasks:
+          - name: step
+            templateRef:
+              name: missing-wt
+              template: some-template

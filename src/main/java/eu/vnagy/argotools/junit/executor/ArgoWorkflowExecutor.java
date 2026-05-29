@@ -2,7 +2,7 @@ package eu.vnagy.argotools.junit.executor;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import com.fasterxml.jackson.dataformat.yaml.YAMLAnchorReplayingFactory;
 import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Artifact;
@@ -69,7 +69,9 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(ArgoWorkflowExecutor.class);
 
-    private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory())
+    // YAMLAnchorReplayingFactory (added in Jackson 2.19) replays anchor node tokens on alias
+    // references, fixing both POJO-field aliases and string-field aliases transparently.
+    private static final ObjectMapper YAML = new ObjectMapper(new YAMLAnchorReplayingFactory())
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     private static final ObjectMapper JSON = new ObjectMapper()
@@ -103,6 +105,26 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
     // -------------------------------------------------------------------------
     // Factory methods
     // -------------------------------------------------------------------------
+
+    /**
+     * Returns the configured YAML {@link ObjectMapper} used internally to parse workflow files.
+     *
+     * <p>Use this when you need to parse a workflow YAML yourself before calling
+     * {@link #from(Workflow)} — for example, to override the entrypoint or inject parameters
+     * before execution. The mapper uses {@link YAMLAnchorReplayingFactory}, which correctly
+     * resolves YAML anchor aliases for both POJO fields and plain string fields.
+     *
+     * <pre>{@code
+     * Workflow wf = ArgoWorkflowExecutor.yamlMapper().readValue(yamlString, Workflow.class);
+     * wf.getSpec().setEntrypoint("my-entrypoint");
+     * try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) { ... }
+     * }</pre>
+     *
+     * @return the shared, configured YAML {@link ObjectMapper}
+     */
+    public static ObjectMapper yamlMapper() {
+        return YAML;
+    }
 
     /**
      * Creates an executor from a workflow YAML file on disk.

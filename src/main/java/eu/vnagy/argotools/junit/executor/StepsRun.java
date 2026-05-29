@@ -1,13 +1,17 @@
 package eu.vnagy.argotools.junit.executor;
 
+import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import eu.vnagy.argotools.junit.model.WorkflowStep;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 
 public final class StepsRun implements WorkflowNode {
@@ -15,13 +19,19 @@ public final class StepsRun implements WorkflowNode {
     private static final Logger log = LoggerFactory.getLogger(StepsRun.class);
 
     private record StepSpec(String name, String when, Map<String, String> args,
-                            Map<String, String> artifactArgs) {}
+                            Map<String, String> artifactArgs,
+                            Template stepTemplate, String childOwner) {}
 
     private final String name;
+    private final Template originalTemplate;
+    private final String owningWt;
+    private final RetryStrategy templateRetryStrategy;
     private final List<List<StepSpec>> groups;
-    private final Map<String, WorkflowNode> steps;
+    private volatile Map<String, WorkflowNode> steps;
     // stepName -> artifact names that downstream steps consume from it
     private final Map<String, Set<String>> neededArtifacts;
+    private volatile int attempts;
+    private final List<Map<String, WorkflowNode>> attemptHistory = new CopyOnWriteArrayList<>();
     private volatile boolean skipped;
     private volatile boolean omitted;
 
@@ -36,6 +46,10 @@ public final class StepsRun implements WorkflowNode {
     StepsRun(String name, Template template, Map<String, Template> templateMap, Set<String> constructing,
              String owningWt) {
         this.name = name;
+        this.originalTemplate = template;
+        this.owningWt = owningWt;
+        this.templateRetryStrategy = template.getRetryStrategy();
+
         Set<String> nowConstructing = new HashSet<>(constructing);
         nowConstructing.add(template.getName());
 
@@ -48,7 +62,7 @@ public final class StepsRun implements WorkflowNode {
                 String childOwner = step.getTemplate() != null ? owningWt
                         : step.getTemplateRef() != null ? step.getTemplateRef().getName() : null;
                 specGroup.add(new StepSpec(step.getName(), step.getWhen(),
-                        parseArgs(step), parseArtifactArgs(step)));
+                        parseArgs(step), parseArtifactArgs(step), stepTemplate, childOwner));
                 WorkflowNode child = nowConstructing.contains(stepTemplate.getName())
                         ? new UninitializedNode(step.getName(), stepTemplate, childOwner)
                         : WorkflowNode.from(step.getName(), stepTemplate, templateMap, nowConstructing, childOwner);
@@ -75,8 +89,61 @@ public final class StepsRun implements WorkflowNode {
         this.neededArtifacts = Collections.unmodifiableMap(immutableNeeded);
     }
 
+    /** Builds a fresh set of child nodes for a retry attempt, using the current template map. */
+    private Map<String, WorkflowNode> buildStepNodes(ExecutionContext ctx) {
+        Set<String> nowConstructing = new HashSet<>();
+        nowConstructing.add(originalTemplate.getName());
+        Map<String, WorkflowNode> built = new LinkedHashMap<>();
+        for (List<StepSpec> group : groups) {
+            for (StepSpec spec : group) {
+                WorkflowNode child = nowConstructing.contains(spec.stepTemplate().getName())
+                        ? new UninitializedNode(spec.name(), spec.stepTemplate(), spec.childOwner())
+                        : WorkflowNode.from(spec.name(), spec.stepTemplate(), ctx.templateMap,
+                                nowConstructing, spec.childOwner());
+                built.put(spec.name(), child);
+            }
+        }
+        return Collections.unmodifiableMap(built);
+    }
+
     @Override
     public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
+        ResolvedRetry retry = ResolvedRetry.from(templateRetryStrategy, ctx.defaultRetryStrategy);
+        return doExecute(ctx, inputParams, retry, 0, retry.backoffDuration(), Instant.now());
+    }
+
+    private CompletableFuture<WorkflowNode> doExecute(ExecutionContext ctx, Map<String, String> inputParams,
+            ResolvedRetry retry, int attempt, Duration currentBackoff, Instant retryStart) {
+        if (attempt > 0) {
+            log.debug("Steps '{}': retry attempt {}", name, attempt + 1);
+            this.steps = buildStepNodes(ctx);
+        }
+        Map<String, WorkflowNode> currentSteps = this.steps;
+        return runGroups(ctx, inputParams, currentSteps).thenCompose(result -> {
+            this.attempts = attempt + 1;
+            if (!retry.shouldRetry(failed(), errored(), attempt + 1)) return CompletableFuture.completedFuture(result);
+            if (!retry.withinMaxDuration(retryStart)) {
+                log.debug("Steps '{}': maxDuration exceeded, stopping retries", name);
+                return CompletableFuture.completedFuture(result);
+            }
+            log.debug("Steps '{}': attempt {} {} — retrying (backoff={}ms)", name, attempt + 1,
+                    failed() ? "FAILED" : "ERRORED", currentBackoff.toMillis());
+            attemptHistory.add(currentSteps);
+            Duration nextBackoff = retry.nextBackoff(currentBackoff);
+            if (currentBackoff.isZero()) {
+                return doExecute(ctx, inputParams, retry, attempt + 1, nextBackoff, retryStart);
+            }
+            return CompletableFuture.supplyAsync(() -> {
+                try { Thread.sleep(currentBackoff.toMillis()); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return null;
+            }, ctx.threadPool).thenCompose(_ ->
+                    doExecute(ctx, inputParams, retry, attempt + 1, nextBackoff, retryStart));
+        });
+    }
+
+    private CompletableFuture<WorkflowNode> runGroups(ExecutionContext ctx, Map<String, String> inputParams,
+            Map<String, WorkflowNode> currentSteps) {
         ExecutionContext localCtx = ctx.childScope();
         log.debug("Steps '{}': {} group(s)", name, groups.size());
 
@@ -91,7 +158,7 @@ public final class StepsRun implements WorkflowNode {
                 List<CompletableFuture<?>> groupFutures = new ArrayList<>();
 
                 for (StepSpec spec : group) {
-                    WorkflowNode node = steps.get(spec.name());
+                    WorkflowNode node = currentSteps.get(spec.name());
 
                     if (spec.when() != null) {
                         String substituted = localCtx.substitute(spec.when(), inputParams);
@@ -151,7 +218,7 @@ public final class StepsRun implements WorkflowNode {
         }
 
         return chain
-                .whenComplete((_, _) -> steps.values().forEach(step -> {
+                .whenComplete((_, _) -> currentSteps.values().forEach(step -> {
                     if (step instanceof PodRun pod) pod.stopIfDaemon();
                 }))
                 .thenApply(_ -> {
@@ -167,6 +234,10 @@ public final class StepsRun implements WorkflowNode {
     }
 
     public Collection<WorkflowNode> steps() { return steps.values(); }
+
+    @Override public List<WorkflowNode> children() { return new ArrayList<>(steps.values()); }
+    @Override public int attempts() { return attempts; }
+    @Override public List<Map<String, WorkflowNode>> attemptHistory() { return List.copyOf(attemptHistory); }
 
     @Override public String name() { return name; }
 

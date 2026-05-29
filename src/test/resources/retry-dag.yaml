@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: retry-dag-
+spec:
+  entrypoint: my-dag
+  arguments:
+    parameters:
+    - name: port
+      value: "0"
+  templates:
+  - name: my-dag
+    retryStrategy:
+      limit: "5"
+    dag:
+      tasks:
+      - name: gate
+        template: poll-gate
+  - name: poll-gate
+    container:
+      image: busybox
+      command: [sh, -c]
+      args:
+      - |
+        while true; do
+          RESULT=$(wget -qO- http://host.docker.internal:{{workflow.parameters.port}}/outcome 2>/dev/null)
+          case "$RESULT" in
+            succeed) exit 0 ;;
+            fail) exit 1 ;;
+          esac
+          sleep 0.1
+        done

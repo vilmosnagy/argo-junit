@@ -4,6 +4,7 @@ import eu.vnagy.argotools.junit.model.Template;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -35,6 +36,11 @@ public final class UninitializedNode implements WorkflowNode {
 
     /** The expanded plan node, or {@code null} if not yet executed. */
     public WorkflowNode resolved() { return resolved; }
+
+    @Override
+    public List<WorkflowNode> children() {
+        return resolved != null ? resolved.children() : List.of();
+    }
 
     @Override public String name()       { return name; }
     @Override public boolean succeeded() { return resolved != null && resolved.succeeded(); }

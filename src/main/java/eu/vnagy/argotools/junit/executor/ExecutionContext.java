@@ -3,6 +3,7 @@ package eu.vnagy.argotools.junit.executor;
 import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Volume;
+import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import org.slf4j.Logger;
@@ -76,6 +77,8 @@ final class ExecutionContext {
     final List<ArtifactDriver> artifactDrivers;
     // volumeName -> volume spec for all volumes declared in the workflow spec
     final Map<String, IoK8sApiCoreV1Volume> volumes;
+    // nullable — retryStrategy from spec.templateDefaults, used when a template has no own retryStrategy
+    final RetryStrategy defaultRetryStrategy;
 
     private ExecutionContext(Builder b) {
         this.templateMap = b.templateMap;
@@ -97,6 +100,7 @@ final class ExecutionContext {
         this.namespace = b.namespace;
         this.artifactDrivers = b.artifactDrivers;
         this.volumes = b.volumes;
+        this.defaultRetryStrategy = b.defaultRetryStrategy;
     }
 
     static Builder builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
@@ -123,6 +127,7 @@ final class ExecutionContext {
         b.namespace = namespace;
         b.artifactDrivers = artifactDrivers;
         b.volumes = volumes;
+        b.defaultRetryStrategy = defaultRetryStrategy;
         return b;
     }
 
@@ -136,6 +141,7 @@ final class ExecutionContext {
                 .artifactDrivers(artifactDrivers)
                 .tmpDir(tmpDir)
                 .volumes(volumes)
+                .defaultRetryStrategy(defaultRetryStrategy)
                 .build();
     }
 
@@ -311,6 +317,7 @@ final class ExecutionContext {
         private String namespace = "default";
         private List<ArtifactDriver> artifactDrivers = List.of();
         private Map<String, IoK8sApiCoreV1Volume> volumes = Map.of();
+        private RetryStrategy defaultRetryStrategy = null;
 
         private Builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
                         ExecutorService threadPool) {
@@ -337,6 +344,7 @@ final class ExecutionContext {
             this.volumes = Map.copyOf(v);
             return this;
         }
+        Builder defaultRetryStrategy(RetryStrategy v) { this.defaultRetryStrategy = v; return this; }
 
         ExecutionContext build() { return new ExecutionContext(this); }
     }

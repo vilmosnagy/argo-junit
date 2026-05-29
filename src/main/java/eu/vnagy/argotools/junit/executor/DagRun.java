@@ -1,13 +1,17 @@
 package eu.vnagy.argotools.junit.executor;
 
 import eu.vnagy.argotools.junit.model.DAGTask;
+import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 import java.util.stream.Collectors;
 
@@ -16,13 +20,19 @@ public final class DagRun implements WorkflowNode {
     private static final Logger log = LoggerFactory.getLogger(DagRun.class);
 
     private record DagTaskSpec(String name, DependsExpression depends, Map<String, String> args,
-                               Map<String, String> artifactArgs) {}
+                               Map<String, String> artifactArgs,
+                               Template taskTemplate, String childOwner) {}
 
     private final String name;
+    private final Template originalTemplate;
+    private final String owningWt;
+    private final RetryStrategy templateRetryStrategy;
     private final List<DagTaskSpec> specs;
-    private final Map<String, WorkflowNode> tasks;
+    private volatile Map<String, WorkflowNode> tasks;
     // taskName -> artifact names that downstream tasks consume from it
     private final Map<String, Set<String>> neededArtifacts;
+    private volatile int attempts;
+    private final List<Map<String, WorkflowNode>> attemptHistory = new CopyOnWriteArrayList<>();
     private volatile boolean skipped;
     private volatile boolean omitted;
 
@@ -37,6 +47,9 @@ public final class DagRun implements WorkflowNode {
     DagRun(String name, Template template, Map<String, Template> templateMap, Set<String> constructing,
            String owningWt) {
         this.name = name;
+        this.originalTemplate = template;
+        this.owningWt = owningWt;
+        this.templateRetryStrategy = template.getRetryStrategy();
         List<DAGTask> dagTasks = template.getDag().getTasks();
 
         Set<String> taskNames = new LinkedHashSet<>();
@@ -72,11 +85,12 @@ public final class DagRun implements WorkflowNode {
         List<DagTaskSpec> builtSpecs = new ArrayList<>();
         Map<String, WorkflowNode> initialTasks = new LinkedHashMap<>();
         for (DAGTask t : topologicalSort(dagTasks)) {
-            builtSpecs.add(new DagTaskSpec(t.getName(),
-                    new DependsExpression(t.getDepends()), resolveArgs(t), resolveArtifactArgs(t)));
             Template taskTemplate = resolveTaskTemplate(t, templateMap, owningWt);
             String childOwner = t.getTemplate() != null ? owningWt
                     : t.getTemplateRef() != null ? t.getTemplateRef().getName() : null;
+            builtSpecs.add(new DagTaskSpec(t.getName(),
+                    new DependsExpression(t.getDepends()), resolveArgs(t), resolveArtifactArgs(t),
+                    taskTemplate, childOwner));
             WorkflowNode child = (taskTemplate == null || nowConstructing.contains(taskTemplate.getName()))
                     ? new UninitializedNode(t.getName(), taskTemplate, childOwner)
                     : WorkflowNode.from(t.getName(), taskTemplate, templateMap, nowConstructing, childOwner);
@@ -99,8 +113,60 @@ public final class DagRun implements WorkflowNode {
         this.neededArtifacts = Collections.unmodifiableMap(immutableNeeded);
     }
 
+    /** Builds a fresh set of child nodes for a retry attempt, using the current template map. */
+    private Map<String, WorkflowNode> buildTaskNodes(ExecutionContext ctx) {
+        Set<String> nowConstructing = new HashSet<>();
+        nowConstructing.add(originalTemplate.getName());
+        Map<String, WorkflowNode> built = new LinkedHashMap<>();
+        for (DagTaskSpec spec : specs) {
+            WorkflowNode child = (spec.taskTemplate() == null
+                    || nowConstructing.contains(spec.taskTemplate().getName()))
+                    ? new UninitializedNode(spec.name(), spec.taskTemplate(), spec.childOwner())
+                    : WorkflowNode.from(spec.name(), spec.taskTemplate(), ctx.templateMap,
+                            nowConstructing, spec.childOwner());
+            built.put(spec.name(), child);
+        }
+        return Collections.unmodifiableMap(built);
+    }
+
     @Override
     public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
+        ResolvedRetry retry = ResolvedRetry.from(templateRetryStrategy, ctx.defaultRetryStrategy);
+        return doExecute(ctx, inputParams, retry, 0, retry.backoffDuration(), Instant.now());
+    }
+
+    private CompletableFuture<WorkflowNode> doExecute(ExecutionContext ctx, Map<String, String> inputParams,
+            ResolvedRetry retry, int attempt, Duration currentBackoff, Instant retryStart) {
+        if (attempt > 0) {
+            log.debug("Dag '{}': retry attempt {}", name, attempt + 1);
+            this.tasks = buildTaskNodes(ctx);
+        }
+        Map<String, WorkflowNode> currentTasks = this.tasks;
+        return runTasks(ctx, inputParams, currentTasks).thenCompose(result -> {
+            this.attempts = attempt + 1;
+            if (!retry.shouldRetry(failed(), errored(), attempt + 1)) return CompletableFuture.completedFuture(result);
+            if (!retry.withinMaxDuration(retryStart)) {
+                log.debug("Dag '{}': maxDuration exceeded, stopping retries", name);
+                return CompletableFuture.completedFuture(result);
+            }
+            log.debug("Dag '{}': attempt {} {} — retrying (backoff={}ms)", name, attempt + 1,
+                    failed() ? "FAILED" : "ERRORED", currentBackoff.toMillis());
+            attemptHistory.add(currentTasks);
+            Duration nextBackoff = retry.nextBackoff(currentBackoff);
+            if (currentBackoff.isZero()) {
+                return doExecute(ctx, inputParams, retry, attempt + 1, nextBackoff, retryStart);
+            }
+            return CompletableFuture.supplyAsync(() -> {
+                try { Thread.sleep(currentBackoff.toMillis()); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return null;
+            }, ctx.threadPool).thenCompose(_ ->
+                    doExecute(ctx, inputParams, retry, attempt + 1, nextBackoff, retryStart));
+        });
+    }
+
+    private CompletableFuture<WorkflowNode> runTasks(ExecutionContext ctx, Map<String, String> inputParams,
+            Map<String, WorkflowNode> currentTasks) {
         ExecutionContext localCtx = ctx.childScope();
         log.debug("Dag '{}': {} task(s) in topological order: {}", name, specs.size(),
                 specs.stream().map(DagTaskSpec::name).collect(Collectors.joining(", ")));
@@ -122,8 +188,8 @@ public final class DagRun implements WorkflowNode {
 
                 if (!spec.depends().evaluate(depResults)) {
                     log.debug("Dag '{}': task '{}' omitted by depends expression", name, spec.name());
-                    tasks.get(spec.name()).omit();
-                    return CompletableFuture.completedFuture(tasks.get(spec.name()));
+                    currentTasks.get(spec.name()).omit();
+                    return CompletableFuture.completedFuture(currentTasks.get(spec.name()));
                 }
 
                 Map<String, String> resolvedArgs = new LinkedHashMap<>();
@@ -137,7 +203,7 @@ public final class DagRun implements WorkflowNode {
                 podCtx = podCtx.withRequestedOutputArtifacts(
                         neededArtifacts.getOrDefault(spec.name(), Set.of()));
 
-                return tasks.get(spec.name()).executeAsync(podCtx, resolvedArgs);
+                return currentTasks.get(spec.name()).executeAsync(podCtx, resolvedArgs);
             }, localCtx.threadPool)
             .thenApply(result -> {
                 if (result instanceof PodRun pod) {
@@ -165,7 +231,7 @@ public final class DagRun implements WorkflowNode {
         }
 
         return CompletableFuture.allOf(futures.values().toArray(new CompletableFuture[0]))
-                .whenComplete((_, _) -> tasks.values().forEach(task -> {
+                .whenComplete((_, _) -> currentTasks.values().forEach(task -> {
                     if (task instanceof PodRun pod) pod.stopIfDaemon();
                 }))
                 .thenApply(_ -> {
@@ -181,6 +247,10 @@ public final class DagRun implements WorkflowNode {
     }
 
     public Collection<WorkflowNode> tasks() { return tasks.values(); }
+
+    @Override public List<WorkflowNode> children() { return new ArrayList<>(tasks.values()); }
+    @Override public int attempts() { return attempts; }
+    @Override public List<Map<String, WorkflowNode>> attemptHistory() { return List.copyOf(attemptHistory); }
 
     @Override public String name() { return name; }
 

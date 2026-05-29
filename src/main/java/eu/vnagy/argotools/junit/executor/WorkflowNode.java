@@ -2,6 +2,7 @@ package eu.vnagy.argotools.junit.executor;
 
 import eu.vnagy.argotools.junit.model.Template;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -24,6 +25,13 @@ public sealed interface WorkflowNode permits DagRun, PodRun, StepsRun, Uninitial
         }
         return new PodRun(name, template);
     }
+
+    /** Current (final) attempt's direct child nodes; empty for leaf nodes. */
+    default List<WorkflowNode> children() { return List.of(); }
+    /** Total completed attempts (0 = not yet run, 1 = ran once, N = retried N-1 times). */
+    default int attempts() { return 0; }
+    /** Child-node maps from each failed attempt before the final one, in order. */
+    default List<Map<String, WorkflowNode>> attemptHistory() { return List.of(); }
 
     String name();
     boolean succeeded();

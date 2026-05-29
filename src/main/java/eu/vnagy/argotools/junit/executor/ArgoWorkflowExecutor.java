@@ -9,6 +9,7 @@ import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.DAGTask;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Volume;
 import eu.vnagy.argotools.junit.model.Parameter;
+import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import eu.vnagy.argotools.junit.model.Workflow;
 import eu.vnagy.argotools.junit.model.WorkflowStep;
@@ -288,6 +289,11 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
             }
         }
 
+        RetryStrategy defaultRetryStrategy = null;
+        if (workflow.getSpec().getTemplateDefaults() != null) {
+            defaultRetryStrategy = workflow.getSpec().getTemplateDefaults().getRetryStrategy();
+        }
+
         ExecutionContext ctx = ExecutionContext.builder(templateMap, workflowParams, threadPool)
                 .k8sClient(k8sClient)
                 .dockerNetwork(resolveNetwork())
@@ -295,6 +301,7 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 .namespace(namespace)
                 .artifactDrivers(drivers)
                 .volumes(volumes)
+                .defaultRetryStrategy(defaultRetryStrategy)
                 .build();
 
         // Download workflow-level HTTP input artifacts before execution starts

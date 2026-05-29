@@ -7,6 +7,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
@@ -59,4 +61,32 @@ public final class WorkflowRun implements AutoCloseable {
     public boolean running()   { return entrypoint.running(); }
     public boolean pending()   { return entrypoint.pending(); }
     public WorkflowNode entrypoint() { return entrypoint; }
+
+    /**
+     * Finds a {@link PodRun} leaf anywhere in the workflow tree — including inside failed retry
+     * attempts — by the short container ID (first 12 hex chars of the Docker container ID).
+     * Returns empty if no container with that ID ran in this workflow.
+     */
+    public Optional<PodRun> findByContainerId(String shortId) {
+        return findPod(entrypoint, shortId);
+    }
+
+    private static Optional<PodRun> findPod(WorkflowNode node, String shortId) {
+        if (node instanceof PodRun pod) {
+            boolean found = pod.podAttempts().stream()
+                    .anyMatch(a -> shortId.equals(a.containerId()));
+            return found ? Optional.of(pod) : Optional.empty();
+        }
+        for (WorkflowNode child : node.children()) {
+            Optional<PodRun> found = findPod(child, shortId);
+            if (found.isPresent()) return found;
+        }
+        for (Map<String, WorkflowNode> attempt : node.attemptHistory()) {
+            for (WorkflowNode child : attempt.values()) {
+                Optional<PodRun> found = findPod(child, shortId);
+                if (found.isPresent()) return found;
+            }
+        }
+        return Optional.empty();
+    }
 }

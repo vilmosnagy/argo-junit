@@ -5,6 +5,7 @@ import eu.vnagy.argotools.junit.executor.*;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 public final class WorkflowSummary {
 
@@ -32,23 +33,63 @@ public final class WorkflowSummary {
 
     private static void collect(WorkflowNode node, String prefix, boolean isRoot,
                                 List<String[]> rows) {
-        rows.add(new String[]{prefix + icon(node) + " " + node.name(), duration(node), message(node)});
+        List<PodRun.Attempt> podAttempts = node instanceof PodRun pod ? pod.podAttempts() : List.of();
+        boolean multiAttemptPod = podAttempts.size() > 1;
+
+        rows.add(new String[]{
+                prefix + icon(node) + " " + node.name(),
+                multiAttemptPod ? "" : duration(node),
+                multiAttemptPod ? podAttempts.size() + " attempts" : message(node)
+        });
 
         String childPrefix = isRoot ? " " : prefix.substring(0, prefix.length() - 2) +
                 (prefix.endsWith("└─") ? "   " : "│  ");
 
-        List<WorkflowNode> children = children(node);
-        for (int i = 0; i < children.size(); i++) {
-            boolean last = i == children.size() - 1;
-            collect(children.get(i), childPrefix + (last ? "└─" : "├─"), false, rows);
+        if (multiAttemptPod) {
+            for (int a = 0; a < podAttempts.size(); a++) {
+                boolean last = a == podAttempts.size() - 1;
+                PodRun.Attempt attempt = podAttempts.get(a);
+                rows.add(new String[]{
+                        childPrefix + (last ? "└─" : "├─") + "attempt " + (a + 1) + " " + (attempt.succeeded() ? "✔" : "✗"),
+                        formatDuration(attempt.duration()),
+                        attemptMessage(attempt)
+                });
+            }
+        } else {
+            List<Map<String, WorkflowNode>> history = node.attemptHistory();
+            if (history.isEmpty()) {
+                collectChildren(node.children(), childPrefix, rows);
+            } else {
+                int total = history.size() + 1;
+                for (int a = 1; a <= total; a++) {
+                    boolean last = a == total;
+                    boolean attemptOk = last && (node.succeeded() || node.daemoned());
+                    rows.add(new String[]{childPrefix + (last ? "└─" : "├─") + "attempt " + a + " " + (attemptOk ? "✔" : "✗"), "", ""});
+                    String grandPrefix = childPrefix + (last ? "   " : "│  ");
+                    List<WorkflowNode> kids = a <= history.size()
+                            ? new ArrayList<>(history.get(a - 1).values())
+                            : node.children();
+                    collectChildren(kids, grandPrefix, rows);
+                }
+            }
         }
     }
 
-    private static List<WorkflowNode> children(WorkflowNode node) {
-        if (node instanceof StepsRun s) return new ArrayList<>(s.steps());
-        if (node instanceof DagRun d)   return new ArrayList<>(d.tasks());
-        if (node instanceof UninitializedNode u && u.resolved() != null) return children(u.resolved());
-        return List.of();
+    private static String attemptMessage(PodRun.Attempt attempt) {
+        String cid = attempt.containerId() != null ? attempt.containerId() : "";
+        if (attempt.errored()) return cid.isEmpty() ? "error" : "error  " + cid;
+        if (!attempt.succeeded()) {
+            String base = "exit code " + attempt.exitCode();
+            return cid.isEmpty() ? base : base + "  " + cid;
+        }
+        return cid;
+    }
+
+    private static void collectChildren(List<WorkflowNode> children, String prefix, List<String[]> rows) {
+        for (int i = 0; i < children.size(); i++) {
+            boolean last = i == children.size() - 1;
+            collect(children.get(i), prefix + (last ? "└─" : "├─"), false, rows);
+        }
     }
 
     private static String icon(WorkflowNode node) {
@@ -73,13 +114,18 @@ public final class WorkflowSummary {
         if (node.omitted()) return "omitted";
         if (node.skipped()) return "skipped";
         if (node instanceof PodRun pod) {
-            String retries = pod.attempts() > 1 ? pod.attempts() + " attempts" : "";
-            if (pod.errored()) return retries.isEmpty() ? "error" : "error, " + retries;
-            if (pod.failed())  return "exit code " + pod.exitCode() + (retries.isEmpty() ? "" : ", " + retries);
-            return retries; // succeeded or daemoned; only non-empty when retried
+            List<PodRun.Attempt> attempts = pod.podAttempts();
+            String cid = attempts.isEmpty() ? ""
+                    : (attempts.get(attempts.size() - 1).containerId() != null
+                       ? attempts.get(attempts.size() - 1).containerId() : "");
+            if (pod.errored()) return cid.isEmpty() ? "error" : "error  " + cid;
+            if (pod.failed())  return cid.isEmpty() ? "exit code " + pod.exitCode()
+                                                    : "exit code " + pod.exitCode() + "  " + cid;
+            return cid;
         }
-        if (node.errored()) return "error";
-        return "";
+        String retries = node.attempts() > 1 ? node.attempts() + " attempts" : "";
+        if (node.errored()) return retries.isEmpty() ? "error" : "error, " + retries;
+        return retries;
     }
 
     private static String formatDuration(Duration d) {

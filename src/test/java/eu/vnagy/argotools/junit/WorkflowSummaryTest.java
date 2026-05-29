@@ -33,7 +33,7 @@ class WorkflowSummaryTest {
                 Status:  Succeeded
 
                 STEP            DURATION  MESSAGE
-                 ✔ hello-world  {duration}
+                 ✔ hello-world  {duration}  {cid}
                 """));
     }
 
@@ -50,8 +50,8 @@ class WorkflowSummaryTest {
 
                 STEP            DURATION  MESSAGE
                  ✔ coinflip
-                 ├─✔ flip-coin  {duration}
-                 ├─✔ heads      {duration}
+                 ├─✔ flip-coin  {duration}  {cid}
+                 ├─✔ heads      {duration}  {cid}
                  └─○ tails                skipped
                 """;
 
@@ -60,9 +60,9 @@ class WorkflowSummaryTest {
 
                 STEP            DURATION  MESSAGE
                  ✔ coinflip
-                 ├─✔ flip-coin  {duration}
+                 ├─✔ flip-coin  {duration}  {cid}
                  ├─○ heads                skipped
-                 └─✔ tails      {duration}
+                 └─✔ tails      {duration}  {cid}
                 """;
 
         assertThat(summary, anyOf(equalTo(headsWon), equalTo(tailsWon)));
@@ -79,10 +79,10 @@ class WorkflowSummaryTest {
 
                 STEP        DURATION  MESSAGE
                  ✔ diamond
-                 ├─✔ A      {duration}
-                 ├─✔ B      {duration}
-                 ├─✔ C      {duration}
-                 └─✔ D      {duration}
+                 ├─✔ A      {duration}  {cid}
+                 ├─✔ B      {duration}  {cid}
+                 ├─✔ C      {duration}  {cid}
+                 └─✔ D      {duration}  {cid}
                 """));
     }
 
@@ -102,8 +102,11 @@ class WorkflowSummaryTest {
                 assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                         Status:  Succeeded
 
-                        STEP          DURATION  MESSAGE
-                         ✔ poll-gate  {duration}  3 attempts
+                        STEP            DURATION  MESSAGE
+                         ✔ poll-gate              3 attempts
+                         ├─attempt 1 ✗  {duration}  exit code 1  {cid}
+                         ├─attempt 2 ✗  {duration}  exit code 1  {cid}
+                         └─attempt 3 ✔  {duration}  {cid}
                         """));
             }
         }
@@ -123,8 +126,134 @@ class WorkflowSummaryTest {
                 assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                         Status:  Failed
 
-                        STEP          DURATION  MESSAGE
-                         ✗ poll-gate  {duration}  exit code 1, 6 attempts
+                        STEP            DURATION  MESSAGE
+                         ✗ poll-gate              6 attempts
+                         ├─attempt 1 ✗  {duration}  exit code 1  {cid}
+                         ├─attempt 2 ✗  {duration}  exit code 1  {cid}
+                         ├─attempt 3 ✗  {duration}  exit code 1  {cid}
+                         ├─attempt 4 ✗  {duration}  exit code 1  {cid}
+                         ├─attempt 5 ✗  {duration}  exit code 1  {cid}
+                         └─attempt 6 ✗  {duration}  exit code 1  {cid}
+                        """));
+            }
+        }
+    }
+
+    @Test
+    void retriedDagSucceededShowsAttemptSubtrees() throws Exception {
+        try (var gate = new RetryOutcomeGate()) {
+            gate.willFail();
+            gate.willFail();
+            gate.willSucceed();
+
+            Workflow wf = YAML.readValue(getClass().getResource("/retry-dag.yaml"), Workflow.class);
+            setParam(wf, "port", String.valueOf(gate.port()));
+
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+                assertThat("dag succeeded", run.succeeded(), is(true));
+                assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                        Status:  Succeeded
+
+                        STEP            DURATION  MESSAGE
+                         ✔ my-dag                 3 attempts
+                         ├─attempt 1 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         ├─attempt 2 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         └─attempt 3 ✔
+                            └─✔ gate    {duration}  {cid}
+                        """));
+            }
+        }
+    }
+
+    @Test
+    void retriedDagExhaustedShowsAllFailedAttempts() throws Exception {
+        try (var gate = new RetryOutcomeGate()) {
+            for (int i = 0; i < 6; i++) gate.willFail();
+
+            Workflow wf = YAML.readValue(getClass().getResource("/retry-dag.yaml"), Workflow.class);
+            setParam(wf, "port", String.valueOf(gate.port()));
+
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+                assertThat("dag failed after exhausting retries", run.failed(), is(true));
+                assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                        Status:  Failed
+
+                        STEP            DURATION  MESSAGE
+                         ✗ my-dag                 6 attempts
+                         ├─attempt 1 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         ├─attempt 2 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         ├─attempt 3 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         ├─attempt 4 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         ├─attempt 5 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         └─attempt 6 ✗
+                            └─✗ gate    {duration}  exit code 1  {cid}
+                        """));
+            }
+        }
+    }
+
+    @Test
+    void retriedStepsSucceededShowsAttemptSubtrees() throws Exception {
+        try (var gate = new RetryOutcomeGate()) {
+            gate.willFail();
+            gate.willFail();
+            gate.willSucceed();
+
+            Workflow wf = YAML.readValue(getClass().getResource("/retry-steps.yaml"), Workflow.class);
+            setParam(wf, "port", String.valueOf(gate.port()));
+
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+                assertThat("steps succeeded", run.succeeded(), is(true));
+                assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                        Status:  Succeeded
+
+                        STEP            DURATION  MESSAGE
+                         ✔ my-steps               3 attempts
+                         ├─attempt 1 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         ├─attempt 2 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         └─attempt 3 ✔
+                            └─✔ gate    {duration}  {cid}
+                        """));
+            }
+        }
+    }
+
+    @Test
+    void retriedStepsExhaustedShowsAllFailedAttempts() throws Exception {
+        try (var gate = new RetryOutcomeGate()) {
+            for (int i = 0; i < 6; i++) gate.willFail();
+
+            Workflow wf = YAML.readValue(getClass().getResource("/retry-steps.yaml"), Workflow.class);
+            setParam(wf, "port", String.valueOf(gate.port()));
+
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+                assertThat("steps failed after exhausting retries", run.failed(), is(true));
+                assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                        Status:  Failed
+
+                        STEP            DURATION  MESSAGE
+                         ✗ my-steps               6 attempts
+                         ├─attempt 1 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         ├─attempt 2 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         ├─attempt 3 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         ├─attempt 4 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         ├─attempt 5 ✗
+                         │  └─✗ gate    {duration}  exit code 1  {cid}
+                         └─attempt 6 ✗
+                            └─✗ gate    {duration}  exit code 1  {cid}
                         """));
             }
         }
@@ -140,8 +269,10 @@ class WorkflowSummaryTest {
     private static String normalizeDurations(String summary) {
         // Replace duration values, then collapse any padding spaces left over between the
         // duration placeholder and a non-empty MESSAGE column to a canonical two spaces.
+        // Also replace 12-char lowercase hex container short IDs with {cid}.
         return summary
                 .replaceAll("\\d+m \\d+s|\\d+s", "{duration}")
-                .replaceAll("\\{duration} {2,}", "{duration}  ");
+                .replaceAll("\\{duration} {2,}", "{duration}  ")
+                .replaceAll("[0-9a-f]{12}", "{cid}");
     }
 }

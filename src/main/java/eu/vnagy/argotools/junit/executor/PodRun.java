@@ -2,7 +2,6 @@ package eu.vnagy.argotools.junit.executor;
 
 import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.model.Artifact;
-import eu.vnagy.argotools.junit.model.Backoff;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1KeyToPath;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Probe;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Volume;
@@ -40,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class PodRun implements WorkflowNode {
 
@@ -47,7 +47,6 @@ public final class PodRun implements WorkflowNode {
 
     public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, ERRORED, SKIPPED, OMITTED, DAEMONED }
 
-    private enum RetryPolicy { ON_FAILURE, ON_ERROR, ALWAYS }
 
     private record ArtifactSpec(String name, String path, Integer mode, Artifact artifact) {}
 
@@ -60,6 +59,9 @@ public final class PodRun implements WorkflowNode {
 
     /** A volume mount declared on the container/script template. */
     private record VolumeMountSpec(String volumeName, String mountPath, String subPath, boolean readOnly) {}
+
+    /** Per-attempt execution record: populated after each container run completes. */
+    public record Attempt(String containerId, Duration duration, boolean succeeded, boolean errored, int exitCode) {}
 
     private final String name;
     // Plan fields — parsed from template at construction time
@@ -75,13 +77,8 @@ public final class PodRun implements WorkflowNode {
     private final List<ConfigMapRef> configMapRefs;
     private final List<EnvRef> envRefs;
     private final List<VolumeMountSpec> volumeMountSpecs;
-    // Retry plan fields
-    private final int retryLimit;       // -1 = infinite
-    private final RetryPolicy retryPolicy;
-    private final Duration backoffDuration;
-    private final double backoffFactor;
-    private final Duration backoffCap;
-    private final Duration backoffMaxDuration;
+    // Retry — raw template field; effective strategy (with templateDefaults fallback) resolved at run() time
+    private final RetryStrategy templateRetryStrategy;
     // Mutable execution state — volatile for visibility across threads
     private volatile Status status;
     private volatile int exitCode;
@@ -92,6 +89,7 @@ public final class PodRun implements WorkflowNode {
     private volatile Duration duration;
     private volatile boolean daemonStopped;
     private volatile int attempts;
+    private final List<Attempt> podAttempts = new CopyOnWriteArrayList<>();
     private volatile Map<String, Path> collectedArtifacts = Map.of();
     private volatile Map<String, String> collectedOutputParams = Map.of();
 
@@ -201,34 +199,7 @@ public final class PodRun implements WorkflowNode {
         }
         this.volumeMountSpecs = List.copyOf(vms);
 
-        // Retry strategy
-        RetryStrategy rs = template.getRetryStrategy();
-        if (rs == null) {
-            this.retryLimit = 0;
-            this.retryPolicy = RetryPolicy.ON_FAILURE;
-            this.backoffDuration = Duration.ZERO;
-            this.backoffFactor = 1.0;
-            this.backoffCap = Duration.ZERO;
-            this.backoffMaxDuration = Duration.ZERO;
-        } else {
-            this.retryLimit = rs.getLimit() != null ? Integer.parseInt(rs.getLimit()) : -1;
-            String pol = rs.getRetryPolicy();
-            this.retryPolicy = "Always".equalsIgnoreCase(pol) ? RetryPolicy.ALWAYS
-                    : "OnError".equalsIgnoreCase(pol) ? RetryPolicy.ON_ERROR
-                    : RetryPolicy.ON_FAILURE;
-            Backoff b = rs.getBackoff();
-            if (b != null) {
-                this.backoffDuration = parseDuration(b.getDuration());
-                this.backoffFactor = b.getFactor() != null ? Double.parseDouble(b.getFactor()) : 1.0;
-                this.backoffCap = b.getCap() != null ? parseDuration(b.getCap()) : Duration.ZERO;
-                this.backoffMaxDuration = b.getMaxDuration() != null ? parseDuration(b.getMaxDuration()) : Duration.ZERO;
-            } else {
-                this.backoffDuration = Duration.ZERO;
-                this.backoffFactor = 1.0;
-                this.backoffCap = Duration.ZERO;
-                this.backoffMaxDuration = Duration.ZERO;
-            }
-        }
+        this.templateRetryStrategy = template.getRetryStrategy();
 
         this.status = Status.PENDING;
         this.exitCode = 0;
@@ -257,6 +228,7 @@ public final class PodRun implements WorkflowNode {
     }
 
     private void run(ExecutionContext ctx, Map<String, String> inputParams) throws Exception {
+        ResolvedRetry retry = ResolvedRetry.from(templateRetryStrategy, ctx.defaultRetryStrategy);
         // Resolve any configMapKeyRef parameters not already provided as explicit args
         if (!configMapRefs.isEmpty()) {
             Map<String, String> enriched = new LinkedHashMap<>(inputParams);
@@ -303,26 +275,15 @@ public final class PodRun implements WorkflowNode {
         Map<String, Path> materializedVolumes = materializeVolumes(ctx, inputParams);
 
         this.attempts = 0;
-        Duration currentBackoff = backoffDuration;
+        Duration currentBackoff = retry.backoffDuration();
         Instant retryStart = Instant.now();
 
         while (true) {
             this.attempts++;
             runAttempt(ctx, resolvedImage, resolvedCommand, resolvedScript, effectiveInputs, resolvedEnv, materializedVolumes);
 
-            boolean shouldRetry = switch (retryPolicy) {
-                case ON_FAILURE -> status == Status.FAILED;
-                case ON_ERROR   -> status == Status.ERRORED;
-                case ALWAYS     -> status == Status.FAILED || status == Status.ERRORED;
-            };
-
-            if (!shouldRetry) break;
-            if (retryLimit >= 0 && this.attempts > retryLimit) {
-                log.debug("Pod '{}': retry limit {} exhausted after {} attempt(s)", name, retryLimit, attempts);
-                break;
-            }
-            if (!backoffMaxDuration.isZero()
-                    && Duration.between(retryStart, Instant.now()).compareTo(backoffMaxDuration) >= 0) {
+            if (!retry.shouldRetry(status == Status.FAILED, status == Status.ERRORED, this.attempts)) break;
+            if (!retry.withinMaxDuration(retryStart)) {
                 log.debug("Pod '{}': maxDuration exceeded, stopping retries", name);
                 break;
             }
@@ -332,10 +293,7 @@ public final class PodRun implements WorkflowNode {
 
             if (!currentBackoff.isZero()) {
                 Thread.sleep(currentBackoff.toMillis());
-                long nextMs = (long) (currentBackoff.toMillis() * backoffFactor);
-                Duration next = Duration.ofMillis(nextMs);
-                if (!backoffCap.isZero() && next.compareTo(backoffCap) > 0) next = backoffCap;
-                currentBackoff = next;
+                currentBackoff = retry.nextBackoff(currentBackoff);
             }
         }
 
@@ -537,6 +495,8 @@ public final class PodRun implements WorkflowNode {
         this.status = Status.RUNNING;
         Instant start = Instant.now();
         cont.start();
+        String rawId = cont.getContainerId();
+        String shortId = rawId != null ? rawId.substring(0, Math.min(12, rawId.length())) : null;
         Duration elapsed = Duration.between(start, Instant.now());
 
         if (daemon) {
@@ -552,6 +512,7 @@ public final class PodRun implements WorkflowNode {
             this.container = cont;
             this.duration = elapsed;
             this.status = Status.DAEMONED;
+            podAttempts.add(new Attempt(shortId, elapsed, true, false, 0));
         } else {
             int code = cont.getCurrentContainerInfo().getState().getExitCodeLong().intValue();
             String podLogs = cont.getLogs();
@@ -569,6 +530,7 @@ public final class PodRun implements WorkflowNode {
             this.container = cont;
             this.duration = elapsed;
             this.status = code == 0 ? Status.SUCCEEDED : Status.FAILED;
+            podAttempts.add(new Attempt(shortId, elapsed, code == 0, false, code));
         }
     }
 
@@ -704,22 +666,6 @@ public final class PodRun implements WorkflowNode {
         }
     }
 
-    private static Duration parseDuration(String s) {
-        if (s == null || s.isBlank()) return Duration.ZERO;
-        s = s.trim();
-        try { return Duration.ofSeconds(Long.parseLong(s)); } catch (NumberFormatException ignored) {}
-        if (s.endsWith("s")) {
-            try { return Duration.ofSeconds(Long.parseLong(s.substring(0, s.length() - 1))); } catch (NumberFormatException ignored) {}
-        }
-        if (s.endsWith("m")) {
-            try { return Duration.ofMinutes(Long.parseLong(s.substring(0, s.length() - 1))); } catch (NumberFormatException ignored) {}
-        }
-        if (s.endsWith("h")) {
-            try { return Duration.ofHours(Long.parseLong(s.substring(0, s.length() - 1))); } catch (NumberFormatException ignored) {}
-        }
-        throw new IllegalArgumentException("Cannot parse Argo duration: '" + s + "'");
-    }
-
     /** Stops the container if this is a daemon pod. No-op otherwise. */
     void stopIfDaemon() {
         if (!daemon || container == null) return;
@@ -749,6 +695,8 @@ public final class PodRun implements WorkflowNode {
     public Optional<String> ip()             { return Optional.ofNullable(ip); }
     public boolean isDaemonStopped()         { return daemonStopped; }
     public int attempts()                    { return attempts; }
+    /** Per-attempt execution records, in run order. Empty for skipped/omitted/pending pods. */
+    public List<Attempt> podAttempts()       { return List.copyOf(podAttempts); }
     public Map<String, Path> collectedArtifacts()      { return collectedArtifacts; }
     public Map<String, String> collectedOutputParams() { return collectedOutputParams; }
     /** The stopped container. Logs and state remain accessible until Ryuk removes it. */

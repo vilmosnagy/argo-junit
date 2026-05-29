@@ -75,6 +75,7 @@ public final class PodRun implements WorkflowNode {
     private final List<OutputParamSpec> outputParamSpecs;
     private final List<ArtifactSpec> inputArtifactDecls;
     private final List<ConfigMapRef> configMapRefs;
+    private final Map<String, String> plainEnv;
     private final List<EnvRef> envRefs;
     private final List<VolumeMountSpec> volumeMountSpecs;
     // Retry — raw template field; effective strategy (with templateDefaults fallback) resolved at run() time
@@ -165,14 +166,18 @@ public final class PodRun implements WorkflowNode {
         }
         this.configMapRefs = List.copyOf(cmRefs);
 
-        // env[].valueFrom.configMapKeyRef / secretKeyRef — resolved from the Kubernetes API at runtime
+        // env[] — plain value: entries passed directly; valueFrom: entries resolved at runtime
         var envVars = template.getScript() != null
                 ? template.getScript().getEnv()
                 : (template.getContainer() != null ? template.getContainer().getEnv() : null);
+        Map<String, String> plainEnvMap = new LinkedHashMap<>();
         List<EnvRef> envRefList = new ArrayList<>();
         if (envVars != null) {
             for (var e : envVars) {
-                if (e.getValueFrom() == null) continue;
+                if (e.getValueFrom() == null) {
+                    if (e.getValue() != null) plainEnvMap.put(e.getName(), e.getValue());
+                    continue;
+                }
                 var src = e.getValueFrom();
                 if (src.getConfigMapKeyRef() != null) {
                     var ref = src.getConfigMapKeyRef();
@@ -183,6 +188,7 @@ public final class PodRun implements WorkflowNode {
                 }
             }
         }
+        this.plainEnv = Map.copyOf(plainEnvMap);
         this.envRefs = List.copyOf(envRefList);
 
         // volumeMounts — parsed from container or script template
@@ -252,8 +258,13 @@ public final class PodRun implements WorkflowNode {
             log.debug("Pod '{}': starting image='{}' command={}", name, resolvedImage, resolvedCommand);
         }
 
-        // Resolve env vars from ConfigMap / Secret references before the retry loop
+        // Resolve env vars before the retry loop
         Map<String, String> resolvedEnv = new LinkedHashMap<>();
+        // Plain value entries (may still contain inputs.parameters placeholders)
+        for (var e : plainEnv.entrySet()) {
+            resolvedEnv.put(e.getKey(), ctx.substitute(e.getValue(), inputParams));
+        }
+        // Ref-based entries resolved from ConfigMap / Secret (override plain if same name)
         for (EnvRef ref : envRefs) {
             String resolvedName = ctx.substitute(ref.resourceName(), inputParams);
             String resolvedKey  = ctx.substitute(ref.key(), inputParams);
@@ -400,7 +411,7 @@ public final class PodRun implements WorkflowNode {
             cont.withEnv("KUBECONFIG", "/tmp/kwok-kubeconfig.yaml");
         }
 
-        // Inject env vars resolved from ConfigMap / Secret references
+        // Inject env vars (plain values and ConfigMap/Secret-resolved values)
         resolvedEnv.forEach(cont::withEnv);
 
         if (daemon) {

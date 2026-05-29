@@ -313,9 +313,10 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         }
 
         RetryStrategy defaultRetryStrategy = null;
-        if (workflow.getSpec().getTemplateDefaults() != null) {
+        if (workflow.getSpec().getTemplateDefaults() != null)
             defaultRetryStrategy = workflow.getSpec().getTemplateDefaults().getRetryStrategy();
-        }
+        if (defaultRetryStrategy == null)
+            defaultRetryStrategy = workflow.getSpec().getRetryStrategy();
 
         ExecutionContext ctx = ExecutionContext.builder(templateMap, workflowParams, threadPool)
                 .k8sClient(k8sClient)

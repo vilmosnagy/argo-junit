@@ -4,10 +4,6 @@
 
 `argo-junit` is a Java library for integration-testing Argo Workflows without a real Kubernetes cluster or Docker-in-Docker. It reimplements a supported subset of the Argo Workflows controller in Java, runs workflow step containers via Testcontainers against the host Docker daemon, and uses [kwok](https://kwok.sigs.k8s.io/) as a lightweight fake Kubernetes API for anything the workflow or its containers need (ConfigMaps, Secrets, etc.).
 
-## Motivation
-
-Testing Argo Workflows in CI today requires either a real cluster, k3s/kind via Docker-in-Docker, or mocking Argo primitives — all slow, fragile, or both. `argo-junit` avoids all of these. Testcontainers talks to the host Docker daemon (no nesting). kwok provides a standards-compliant Kubernetes API server at negligible cost. The Java executor drives execution, running each step as a real container.
-
 ## Architecture
 
 ```
@@ -48,14 +44,21 @@ ArgoWorkflowExecutor (Java)
 | `script` templates | ✓ | stdout → `outputs.result` |
 | `steps` templates | ✓ | Sequential groups, parallel within group |
 | `dag` templates | ✓ | Dependency-based execution with `depends:` expressions |
-| `daemon` templates | ✓ | Container left running; IP exposed to downstream steps; stopped after its scope completes |
+| `daemon` templates | ✓ | Container left running; IP exposed to downstream steps; stopped after its scope completes; HTTP and exec `readinessProbe` supported |
 | `inputs.parameters` / `outputs.parameters` | ✓ | Full parameter passing |
 | `outputs.result` | ✓ | Script stdout capture |
+| `outputs.parameters[].valueFrom.path` | ✓ | File content read from container after exit |
+| `inputs.parameters[].valueFrom.configMapKeyRef` | ✓ | Template-level parameter from ConfigMap |
 | `when` conditionals | ✓ | Evaluated after expression substitution |
 | `retryStrategy` | ✓ | `limit`, `retryPolicy` (OnFailure / OnError / Always), exponential backoff with `factor`, `cap`, `maxDuration` |
+| `spec.templateDefaults.retryStrategy` | ✓ | Fallback retry strategy for templates without their own |
+| `env[].valueFrom.configMapKeyRef` / `secretKeyRef` | ✓ | Container/script env vars resolved from ConfigMap or Secret |
+| `volumes` + `volumeMounts` | ✓ | `emptyDir`, `configMap`, `secret` (with `items` filtering); bind-mounted onto containers |
 | Inter-step artifact passing | ✓ | Files and directories; lazy extraction — only artifacts consumed downstream are collected |
-| Explicit artifact locations (`s3:`, `gcs:`, `azure:`) | — | ArtifactDriver impls; credentials from kwok Secrets |
-| `WorkflowTemplate` resolution | — | Via kwok CRD lookup |
+| Workflow-level HTTP input artifacts | ✓ | `arguments.artifacts[].http.url` downloaded before execution starts |
+| Explicit S3 artifact locations (`s3:`) | ✓ | `S3ArtifactDriver`; credentials from kwok Secrets; tar.gz archive handling; MinIO-compatible |
+| Explicit GCS / Azure artifact locations | — | `ArtifactDriver` interface ready; no built-in implementations yet |
+| `WorkflowTemplate` resolution | ✓ | Via kwok CRD lookup; `templateRef` in steps and DAG tasks |
 
 ### Out of scope
 
@@ -71,21 +74,36 @@ ArgoWorkflowExecutor (Java)
 ### Entry points
 
 ```java
-public class ArgoWorkflowExecutor {
+public class ArgoWorkflowExecutor implements AutoCloseable {
     // All three from() variants eagerly parse the workflow YAML into a Workflow model object.
     public static ArgoWorkflowExecutor from(Path workflowFile);
     public static ArgoWorkflowExecutor from(String workflowYaml);
     public static ArgoWorkflowExecutor from(Workflow workflow);
 
-    // Starts kwok if not already running and returns a fabric8 client pointed at it.
-    // Call this before execute() when the test needs to pre-populate Secrets, ConfigMaps, etc.
-    public KubernetesClient getKubernetesClient();   // planned
+    // Sets the Kubernetes namespace for ConfigMap/Secret lookups (default: "default").
+    public ArgoWorkflowExecutor withNamespace(String namespace);
+
+    // Supplies an externally-managed kwok container. Does not start or stop it.
+    // Use to share a single kwok instance across multiple executors or test methods.
+    public ArgoWorkflowExecutor withKwok(KwokContainer kwok);
+
+    // Supplies an externally-managed Docker network. Not closed by close().
+    public ArgoWorkflowExecutor withNetwork(Network network);
+
+    // Starts an executor-owned kwok cluster and returns a fabric8 client pointed at it.
+    // Call this before execute() when the workflow uses ConfigMaps, Secrets, or WorkflowTemplates.
+    // The cluster is stopped when close() is called.
+    public KubernetesClient getKubernetesClient();
 
     // Non-blocking: launches execution on a daemon thread pool, returns immediately.
     public WorkflowRun executeAsync();
 
     // Blocking convenience wrapper: equivalent to executeAsync().await().
     public WorkflowRun execute() throws Exception;
+
+    // Stops the executor-owned kwok container (if any) and closes its Docker network.
+    // Resources supplied via withKwok() or withNetwork() are never touched.
+    @Override void close();
 }
 ```
 
@@ -108,6 +126,12 @@ public sealed interface WorkflowNode permits DagRun, StepsRun, PodRun, Uninitial
     boolean pending();
     void skip();
     void omit();
+    // Current (final) attempt's direct child nodes; empty for leaf nodes.
+    List<WorkflowNode> children();
+    // Per-attempt child-node maps from failed retries before the final one, in order.
+    List<Map<String, WorkflowNode>> attemptHistory();
+    // Total completed attempts (0 = not yet run, 1 = ran once, N = retried N-1 times).
+    int attempts();
 }
 ```
 
@@ -133,14 +157,22 @@ public final class StepsRun implements WorkflowNode {
 public final class PodRun implements WorkflowNode {
     public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, ERRORED, SKIPPED, OMITTED, DAEMONED }
 
+    // Per-attempt execution record populated after each container run completes.
+    public record Attempt(String containerId, Duration duration, boolean succeeded, boolean errored, int exitCode) {}
+
     public Status status();
     public int exitCode();
     public String logs();
     public Duration duration();
     public int attempts();  // total container starts across all retry attempts
+    // Per-attempt execution records, in run order.
+    public List<Attempt> podAttempts();
 
     // outputs.result — stdout of a script template. Empty for container templates.
     public Optional<String> outputResult();
+
+    // outputs.parameters collected after a successful run, keyed by parameter name.
+    public Map<String, String> collectedOutputParams();
 
     // Daemon pods only.
     public Optional<String> ip();
@@ -181,6 +213,10 @@ public final class WorkflowRun implements AutoCloseable {
     // Returns the top-level node (the entrypoint template). 
     // Navigate into it via DagRun/StepsRun.get() for specific steps/tasks.
     WorkflowNode entrypoint();
+
+    // Finds a PodRun by the short container ID (first 12 hex chars of the Docker container ID).
+    // Searches across retry attempts. Returns empty if no matching container ran in this workflow.
+    Optional<PodRun> findByContainerId(String shortId);
 
     // Deletes the per-run artifact temp directory. Use via try-with-resources.
     @Override void close();
@@ -244,11 +280,18 @@ POJOs generated from the Argo Workflows OpenAPI spec (`argo-workflows/api/openap
 
 Two responsibilities, currently implemented inline in the executor:
 
-**Template substitution** — regex-based replacement of `{{...}}` placeholders. Three patterns resolved in order: `{{steps.<n>.outputs.result}}` (from completed steps), `{{inputs.parameters.<name>}}` (from task/step arguments), `{{workflow.parameters.<name>}}` (from workflow-level arguments). Applied to image, command, args, script source, and `when` fields.
+**Template substitution** — regex-based replacement of `{{...}}` placeholders. Patterns resolved in order:
+- `{{steps.<n>.outputs.result}}` — output result of a preceding step
+- `{{steps.<n>.ip}}` / `{{tasks.<n>.ip}}` — IP address of a daemon pod
+- `{{steps.<n>.outputs.parameters.<name>}}` / `{{tasks.<n>.outputs.parameters.<name>}}` — file-backed output parameter
+- `{{inputs.parameters.<name>}}` — parameter passed to this template invocation
+- `{{workflow.parameters.<name>}}` — workflow-level argument
+
+Applied to: image, command, args, script source, `when` fields, and ConfigMap/Secret resource name and key references.
 
 **`when` evaluation** — after substitution, `when` fields are plain comparison strings (e.g. `"heads == heads"`). Currently evaluated with simple string splitting on ` == ` and ` != `; boolean literals also accepted. Full expression support planned via Apache JEXL or SpEL. No custom parser.
 
-Artifact references (`{{steps.X.outputs.artifacts.foo}}`) are not substituted as strings — the executor will resolve them as artifact handles on a separate code path (planned).
+Artifact references (`{{steps.X.outputs.artifacts.foo}}`) are not substituted as strings — the executor resolves them as artifact handles on a separate code path: `DagRun`/`StepsRun` parse `from:` expressions at plan time to determine which upstream artifacts to collect, and pass the resolved host paths to downstream pods via `inputArtifacts`.
 
 ### Artifact Subsystem (`artifact/`)
 
@@ -256,9 +299,11 @@ Artifact references (`{{steps.X.outputs.artifacts.foo}}`) are not substituted as
 
 ```java
 public interface ArtifactDriver {
-    boolean supports(Artifact artifact);           // checks which location field is non-null
-    void upload(Artifact artifact, Path localPath);  // file or directory
-    void download(Artifact artifact, Path localPath);
+    boolean supports(Artifact artifact);  // checks which location field is non-null
+    // Download artifact to tempDir; returns host-side path of the resulting file or directory.
+    Path download(Artifact artifact, Path tempDir, KubernetesClient k8sClient, String namespace) throws Exception;
+    // Upload source (file or directory) to the artifact's external location.
+    void upload(Artifact artifact, Path source, KubernetesClient k8sClient, String namespace) throws Exception;
 }
 ```
 
@@ -266,9 +311,9 @@ public interface ArtifactDriver {
 
 Drivers are discovered via Java's built-in `ServiceLoader<ArtifactDriver>`. Built-in implementations register themselves in `META-INF/services`; users can provide additional drivers on the classpath without any code-level registration. The executor picks the first driver whose `supports()` returns true.
 
-When Argo's `archive` setting requires tar.gz, the executor handles pack/unpack on the host around the driver call — the driver itself just transfers whatever local path it receives (file or directory). Credentials are resolved from kwok Secrets.
+The driver is responsible for tar.gz compression/decompression (following Argo's default archive strategy) unless `archive.none: {}` is set on the artifact. Credentials are resolved from kwok Secrets by the driver via the supplied `k8sClient`.
 
-Built-in implementations: `S3ArtifactDriver`, `GcsArtifactDriver`, `AzureBlobArtifactDriver`.
+Built-in implementations: `S3ArtifactDriver` (S3-compatible; MinIO/AWS; tar.gz archive handling). GCS and Azure implementations are not yet provided.
 
 **Inter-step artifact passing** — output artifacts with no explicit location, and inputs using `from:`, are routed through a temporary directory created via `Files.createTempDirectory()`. No external store involved.
 
@@ -288,7 +333,11 @@ Returns a `WorkflowRun` with per-step outcomes, outputs, and logs.
 
 ### kwok Integration (`kwok/`)
 
-kwok runs as a Testcontainer on a shared Docker network with step containers. The executor uses the fabric8 client pointed at kwok to resolve `secretKeyRef` credentials for artifact drivers and (later) fetch `WorkflowTemplate` CRDs. Test setup applies Secrets and WorkflowTemplates to kwok before running the workflow. Step containers receive `KUBECONFIG` pointing to kwok's in-network address.
+kwok runs as a Testcontainer on a shared Docker network with step containers. The executor uses the fabric8 client pointed at kwok to resolve `configMapKeyRef`/`secretKeyRef` values, fetch `WorkflowTemplate` CRDs, and supply credentials to artifact drivers. Test setup applies Secrets, ConfigMaps, and WorkflowTemplates to kwok before running the workflow. Step containers receive `KUBECONFIG` pointing to kwok's in-network address.
+
+The executor can own kwok (started by `getKubernetesClient()`, stopped by `close()`) or borrow an externally-managed instance via `withKwok(KwokContainer)`. Borrowed containers are never stopped by the executor — this allows sharing a single kwok across multiple executors or test methods, amortising the ~1–2 s startup cost.
+
+`ArgoKwok` (in `eu.vnagy.argotools.junit.kwok`) wraps `KwokContainer` and installs the Argo Workflows CRDs on startup via the quick-start manifest bundled in the library jar. Use it whenever a test needs to register `WorkflowTemplate` resources or run workflows that use `templateRef`. `ArgoKwok.container()` returns the underlying `KwokContainer` for passing to `withKwok()`.
 
 ## Artifact Collection
 
@@ -318,7 +367,7 @@ Two sub-packages have narrower roles:
 | Sub-package | Purpose |
 |---|---|
 | `eu.vnagy.argotools.junit.executor` | Package-private executor tests that must reach into internals (e.g. `ArtifactLifecycleTest` accessing `WorkflowRun.tmpDir`). Only use this when package-private access is genuinely required. |
-| `eu.vnagy.argotools.junit.testutil` | Shared test infrastructure: `WorkflowReleaseGate`, `RetryOutcomeGate`. Not test classes — no `@Test` methods here. |
+| `eu.vnagy.argotools.junit.testutil` | Shared test infrastructure: `WorkflowReleaseGate`, `RetryOutcomeGate`, `MinioContainer`. Not test classes — no `@Test` methods here. |
 
 ## Test Resources — Argo Workflows Submodule
 
@@ -334,20 +383,20 @@ src/test/resources/examples → ../../argo-workflows/examples
 argo-junit/
 ├── argo-workflows/                     ← git submodule
 ├── src/
-│   ├── main/java/eu/vnagy/argotools/
+│   ├── main/java/eu/vnagy/argotools/junit/
 │   │   ├── model/                      ← generated POJOs
-│   │   ├── expression/                 ← substitution + when evaluator
-│   │   ├── artifact/                   ← ArtifactDriver interface + impls
+│   │   ├── artifact/                   ← ArtifactDriver interface + S3 impl
 │   │   ├── executor/                   ← execution engine, Testcontainer lifecycle
 │   │   ├── util/                       ← WorkflowSummary and other utilities
-│   │   └── kwok/                       ← kwok Testcontainer setup, fabric8 wiring
+│   │   └── kwok/                       ← KwokContainer, ArgoKwok
 │   └── test/
 │       ├── java/
 │       │   ├── io/github/argoproj/argoworkflows/   ← upstream example workflow tests
 │       │   └── eu/vnagy/argotools/junit/
 │       │       ├── (feature tests)                 ← custom integration tests
 │       │       ├── executor/                       ← package-private executor tests
-│       │       └── testutil/                       ← WorkflowReleaseGate, RetryOutcomeGate
+│       │       ├── testutil/                       ← WorkflowReleaseGate, RetryOutcomeGate, MinioContainer
+│       │       └── workflowtemplates/              ← WorkflowTemplate resolution tests
 │       └── resources/
 │           ├── (custom YAML fixtures)
 │           └── examples → ../../argo-workflows/examples  (symlink)
@@ -385,6 +434,23 @@ Goal: parallel DAG execution with observable in-progress state.
 - Inter-step artifact passing: output artifacts collected from stopped containers via Docker TAR API into `ExecutionContext.tmpDir`; only artifacts consumed by downstream steps extracted (lazy); `WorkflowRun` implements `AutoCloseable` for cleanup
 - `WorkflowSummary`: human-readable tree of step outcomes with duration and retry count
 
-### Phase 4+ — To be defined
+### Phase 4 — kwok integration, WorkflowTemplate resolution, S3 artifacts, volumes, env injection ✓ Done
 
-Candidates: explicit artifact locations (S3, GCS, Azure via ArtifactDriver), kwok integration, `WorkflowTemplate` resolution.
+Goal: bring the executor to parity with real-world workflows that use Kubernetes API objects.
+
+- `kwok` integration: `KwokContainer` Testcontainer; `getKubernetesClient()`, `withKwok()`, `withNetwork()`, `withNamespace()` API; executor-owned vs. externally-managed lifecycle; `ArgoWorkflowExecutor` implements `AutoCloseable`
+- `WorkflowTemplate` resolution via kwok CRD lookup; `templateRef` in steps and DAG tasks; `ArgoKwok` test helper installs Argo CRDs at startup
+- `S3ArtifactDriver`: upload/download with tar.gz archive handling; credentials from kwok Secrets; MinIO/AWS-compatible
+- Workflow-level HTTP input artifacts: `arguments.artifacts[].http.url` downloaded before execution
+- `outputs.parameters[].valueFrom.path`: file content read from container after exit
+- `inputs.parameters[].valueFrom.configMapKeyRef`: template-level parameter from ConfigMap
+- `env[].valueFrom.configMapKeyRef` / `secretKeyRef`: container/script env vars resolved from ConfigMap or Secret
+- `volumes` + `volumeMounts`: `emptyDir`, `configMap`, `secret` (with `items` filtering); bind-mounted onto step containers
+- `spec.templateDefaults.retryStrategy`: fallback retry strategy for templates without their own
+- `daemon` exec `readinessProbe`: polls via `execInContainer` until the probe command exits 0
+- `PodRun.podAttempts()`: per-attempt execution records (container ID, duration, exit code)
+- `WorkflowRun.findByContainerId()`: locate a `PodRun` by short container ID, including across retry attempts
+
+### Phase 5+ — To be defined
+
+Candidates: GCS / Azure artifact drivers, `withItems` / `withParam` loops.

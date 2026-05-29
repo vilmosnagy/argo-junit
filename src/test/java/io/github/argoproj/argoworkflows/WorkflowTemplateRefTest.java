@@ -2,7 +2,7 @@ package io.github.argoproj.argoworkflows;
 
 import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
-import eu.vnagy.argotools.junit.testutil.ArgoKwok;
+import eu.vnagy.argotools.junit.kwok.ArgoKwok;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;

@@ -1,6 +1,6 @@
 package eu.vnagy.argotools.junit.workflowtemplates;
 
-import eu.vnagy.argotools.junit.testutil.ArgoKwok;
+import eu.vnagy.argotools.junit.kwok.ArgoKwok;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import org.junit.jupiter.api.AfterAll;

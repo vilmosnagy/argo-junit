@@ -5,7 +5,7 @@ import eu.vnagy.argotools.junit.executor.DagRun;
 import eu.vnagy.argotools.junit.executor.PodRun;
 import eu.vnagy.argotools.junit.executor.StepsRun;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
-import eu.vnagy.argotools.junit.testutil.ArgoKwok;
+import eu.vnagy.argotools.junit.kwok.ArgoKwok;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;

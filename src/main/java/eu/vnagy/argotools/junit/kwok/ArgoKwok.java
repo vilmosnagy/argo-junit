@@ -1,7 +1,6 @@
-package eu.vnagy.argotools.junit.testutil;
+package eu.vnagy.argotools.junit.kwok;
 
 import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
-import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import org.slf4j.Logger;

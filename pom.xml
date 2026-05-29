@@ -178,17 +178,17 @@
                 <executions>
                     <execution>
                         <id>download-argo-quick-start</id>
-                        <phase>generate-test-resources</phase>
+                        <phase>generate-resources</phase>
                         <goals>
                             <goal>wget</goal>
                         </goals>
                         <configuration>
                             <url>https://github.com/argoproj/argo-workflows/releases/download/${argo.quickstart.version}/quick-start-minimal.yaml</url>
-                            <outputDirectory>${project.build.testOutputDirectory}/argo-install</outputDirectory>
+                            <outputDirectory>${project.build.outputDirectory}/argo-install</outputDirectory>
                             <outputFileName>quick-start-minimal.yaml</outputFileName>
                             <!--
                                 overwrite=true ensures the file is always copied from the local cache
-                                (~/.m2/repository/.cache/download-maven-plugin/) to target/test-classes.
+                                (~/.m2/repository/.cache/download-maven-plugin/) to target/classes.
                                 When argo.quickstart.version changes, the URL changes, a new cache entry
                                 is created, and the updated file lands in target/. Network traffic only
                                 happens on the first build after a version bump.

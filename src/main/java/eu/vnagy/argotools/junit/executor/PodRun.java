@@ -98,11 +98,11 @@ public final class PodRun implements WorkflowNode {
         this.name = name;
         if (template.getScript() != null) {
             var script = template.getScript();
-            List<String> base = script.getCommand() != null
-                    ? new ArrayList<>(script.getCommand()) : new ArrayList<>();
-            base.add("/tmp/script");
             this.image = script.getImage();
-            this.command = List.copyOf(base);
+            // command becomes the container ENTRYPOINT (overriding the image's baked-in one);
+            // /tmp/script is passed as CMD in runAttempt
+            this.command = script.getCommand() != null
+                    ? List.copyOf(script.getCommand()) : List.of();
             this.scriptSource = script.getSource();
             this.daemon = false;
             this.readinessProbe = null;
@@ -245,7 +245,12 @@ public final class PodRun implements WorkflowNode {
         List<String> resolvedCommand = ctx.substituteAll(command, inputParams);
         String resolvedScript = scriptSource != null ? ctx.substitute(scriptSource, inputParams) : null;
 
-        log.debug("Pod '{}': starting image='{}' command={}", name, resolvedImage, resolvedCommand);
+        if (resolvedScript != null) {
+            log.debug("Pod '{}': starting image='{}' entrypoint={} script=/tmp/script",
+                    name, resolvedImage, resolvedCommand);
+        } else {
+            log.debug("Pod '{}': starting image='{}' command={}", name, resolvedImage, resolvedCommand);
+        }
 
         // Resolve env vars from ConfigMap / Secret references before the retry loop
         Map<String, String> resolvedEnv = new LinkedHashMap<>();
@@ -368,8 +373,18 @@ public final class PodRun implements WorkflowNode {
                             Map<String, Path> materializedVolumes) throws Exception {
         @SuppressWarnings("resource")
         GenericContainer<?> cont = new GenericContainer<>(DockerImageName.parse(resolvedImage));
-        if (!resolvedCommand.isEmpty()) {
-            cont.withCommand(resolvedCommand.toArray(String[]::new));
+        if (resolvedScript != null) {
+            // Script template: override the image ENTRYPOINT with the template's command array
+            // so that a baked-in ENTRYPOINT does not prepend itself to the invocation.
+            if (!resolvedCommand.isEmpty()) {
+                cont.withCreateContainerCmdModifier(
+                        cmd -> cmd.withEntrypoint(resolvedCommand.toArray(String[]::new)));
+            }
+            cont.withCommand("/tmp/script");
+        } else {
+            if (!resolvedCommand.isEmpty()) {
+                cont.withCommand(resolvedCommand.toArray(String[]::new));
+            }
         }
 
         // Join the kwok Docker network so the container can reach the API server by hostname

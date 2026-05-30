@@ -58,6 +58,7 @@ public final class WorkflowRun implements AutoCloseable {
 
     public boolean succeeded() { return entrypoint.succeeded(); }
     public boolean failed()    { return entrypoint.failed(); }
+    public boolean errored()   { return entrypoint.errored(); }
     public boolean running()   { return entrypoint.running(); }
     public boolean pending()   { return entrypoint.pending(); }
     public WorkflowNode entrypoint() { return entrypoint; }

@@ -6,10 +6,16 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import eu.vnagy.argotools.junit.executor.PodRun;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
+import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Workflow;
+import eu.vnagy.argotools.junit.testutil.MinioContainer;
 import eu.vnagy.argotools.junit.testutil.RetryOutcomeGate;
 import eu.vnagy.argotools.junit.util.WorkflowSummary;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.nio.file.Path;
 
@@ -256,6 +262,165 @@ class WorkflowSummaryTest {
                             └─✗ gate    {duration}  exit code 1  {cid}
                         """));
             }
+        }
+    }
+
+    @Nested
+    @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+    class ErroredArtifact {
+
+        static final String BUCKET = "summary-errored-artifact-test";
+
+        KwokContainer kwok;
+        MinioContainer minio;
+
+        @BeforeAll
+        void setup() {
+            minio = new MinioContainer();
+            minio.start();
+            minio.createBucket(BUCKET);
+
+            kwok = new KwokContainer();
+            kwok.start();
+            kwok.createClient()
+                    .secrets()
+                    .inNamespace("default")
+                    .resource(minio.credentialsSecret("minio-creds", "access-key", "secret-key"))
+                    .create();
+        }
+
+        @AfterAll
+        void tearDown() {
+            if (kwok != null) kwok.stop();
+            if (minio != null) minio.stop();
+        }
+
+        @Test
+        void dagTaskErroredShowsMessageInSummary() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: dag-errored-summary-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          dag:
+                            tasks:
+                              - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/does-not-exist.txt
+                                        accessKeySecret:
+                                          name: minio-creds
+                                          key: access-key
+                                        secretKeySecret:
+                                          name: minio-creds
+                                          key: secret-key
+                                      archive:
+                                        none: {}
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Errored
+                    
+                    STEP          DURATION  MESSAGE
+                     ✗ main                 error
+                     └─✗ consume  {duration}  artifact 'data-file': no such object: data/does-not-exist.txt
+                    """));
+        }
+
+        @Test
+        void stepsStepErroredShowsMessageInSummary() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: steps-errored-summary-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          steps:
+                            - - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/does-not-exist.txt
+                                        accessKeySecret:
+                                          name: minio-creds
+                                          key: access-key
+                                        secretKeySecret:
+                                          name: minio-creds
+                                          key: secret-key
+                                      archive:
+                                        none: {}
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Errored
+                    
+                    STEP          DURATION  MESSAGE
+                     ✗ main                 error
+                     └─✗ consume  {duration}  artifact 'data-file': no such object: data/does-not-exist.txt
+                    """));
+        }
+
+        private Workflow patchEndpointAndBucket(String yaml) throws Exception {
+            Workflow wf = ArgoWorkflowExecutor.yamlMapper().readValue(yaml, Workflow.class);
+            wf.getSpec().getArguments().getParameters().stream()
+                    .filter(p -> "s3-endpoint".equals(p.getName())).findFirst().orElseThrow()
+                    .setValue(minio.endpoint());
+            wf.getSpec().getArguments().getParameters().stream()
+                    .filter(p -> "s3-bucket".equals(p.getName())).findFirst().orElseThrow()
+                    .setValue(BUCKET);
+            return wf;
         }
     }
 

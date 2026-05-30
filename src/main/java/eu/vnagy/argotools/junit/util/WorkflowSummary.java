@@ -13,7 +13,7 @@ public final class WorkflowSummary {
 
     public static String format(WorkflowRun run) {
         StringBuilder out = new StringBuilder();
-        out.append("Status:  ").append(run.succeeded() ? "Succeeded" : run.failed() ? "Failed" : "Unknown")
+        out.append("Status:  ").append(run.succeeded() ? "Succeeded" : run.failed() ? "Failed" : run.errored() ? "Errored" : "Unknown")
            .append('\n').append('\n');
 
         List<String[]> rows = new ArrayList<>();
@@ -118,7 +118,10 @@ public final class WorkflowSummary {
             String cid = attempts.isEmpty() ? ""
                     : (attempts.get(attempts.size() - 1).containerId() != null
                        ? attempts.get(attempts.size() - 1).containerId() : "");
-            if (pod.errored()) return cid.isEmpty() ? "error" : "error  " + cid;
+            if (pod.errored()) {
+                String msg = pod.message().isEmpty() ? "error" : pod.message();
+                return cid.isEmpty() ? msg : msg + "  " + cid;
+            }
             if (pod.failed())  return cid.isEmpty() ? "exit code " + pod.exitCode()
                                                     : "exit code " + pod.exitCode() + "  " + cid;
             return cid;

@@ -5,6 +5,7 @@ import eu.vnagy.argotools.junit.executor.WorkflowRun;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Workflow;
 import eu.vnagy.argotools.junit.testutil.MinioContainer;
+import eu.vnagy.argotools.junit.util.WorkflowSummary;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -12,6 +13,9 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsString;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -164,6 +168,394 @@ class DirectS3ArtifactArgTest {
         try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
             assertTrue(run.succeeded(),
                     "Steps step with direct S3 artifact argument must download the file into the container");
+        }
+    }
+
+    @Test
+    void dagTaskMissingS3ObjectErrorsThePodWithClearMessage() throws Exception {
+        String workflowYaml = """
+                apiVersion: argoproj.io/v1alpha1
+                kind: Workflow
+                metadata:
+                  name: dag-missing-s3-object-test
+                spec:
+                  entrypoint: main
+                  arguments:
+                    parameters:
+                      - name: s3-endpoint
+                        value: placeholder
+                      - name: s3-bucket
+                        value: placeholder
+                  templates:
+                    - name: main
+                      dag:
+                        tasks:
+                          - name: consume
+                            template: consume
+                            arguments:
+                              artifacts:
+                                - name: data-file
+                                  s3:
+                                    endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                    insecure: true
+                                    bucket: '{{workflow.parameters.s3-bucket}}'
+                                    key: data/does-not-exist.txt
+                                    accessKeySecret:
+                                      name: minio-creds
+                                      key: access-key
+                                    secretKeySecret:
+                                      name: minio-creds
+                                      key: secret-key
+                                  archive:
+                                    none: {}
+                    - name: consume
+                      inputs:
+                        artifacts:
+                          - name: data-file
+                            path: /data/input.txt
+                      script:
+                        image: alpine:3
+                        command: [sh, -e]
+                        source: |
+                          cat /data/input.txt
+                """;
+
+        Workflow wf = patchEndpointAndBucket(workflowYaml);
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+            assertFalse(run.succeeded(), "Workflow must not succeed when S3 object is missing");
+            assertTrue(run.errored(), "Workflow must be in errored state");
+            assertThat(WorkflowSummary.format(run), containsString("no such object: data/does-not-exist.txt"));
+        }
+    }
+
+    @Test
+    void stepsStepMissingS3ObjectErrorsThePodWithClearMessage() throws Exception {
+        String workflowYaml = """
+                apiVersion: argoproj.io/v1alpha1
+                kind: Workflow
+                metadata:
+                  name: steps-missing-s3-object-test
+                spec:
+                  entrypoint: main
+                  arguments:
+                    parameters:
+                      - name: s3-endpoint
+                        value: placeholder
+                      - name: s3-bucket
+                        value: placeholder
+                  templates:
+                    - name: main
+                      steps:
+                        - - name: consume
+                            template: consume
+                            arguments:
+                              artifacts:
+                                - name: data-file
+                                  s3:
+                                    endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                    insecure: true
+                                    bucket: '{{workflow.parameters.s3-bucket}}'
+                                    key: data/does-not-exist.txt
+                                    accessKeySecret:
+                                      name: minio-creds
+                                      key: access-key
+                                    secretKeySecret:
+                                      name: minio-creds
+                                      key: secret-key
+                                  archive:
+                                    none: {}
+                    - name: consume
+                      inputs:
+                        artifacts:
+                          - name: data-file
+                            path: /data/input.txt
+                      script:
+                        image: alpine:3
+                        command: [sh, -e]
+                        source: |
+                          cat /data/input.txt
+                """;
+
+        Workflow wf = patchEndpointAndBucket(workflowYaml);
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+            assertFalse(run.succeeded(), "Workflow must not succeed when S3 object is missing");
+            assertTrue(run.errored(), "Workflow must be in errored state");
+            assertThat(WorkflowSummary.format(run), containsString("no such object: data/does-not-exist.txt"));
+        }
+    }
+
+    @Test
+    void dagTaskInputsParamSubstitutedInS3ArtifactKey() throws Exception {
+        String workflowYaml = """
+                apiVersion: argoproj.io/v1alpha1
+                kind: Workflow
+                metadata:
+                  name: dag-inputs-param-s3-key-test
+                spec:
+                  entrypoint: main
+                  arguments:
+                    parameters:
+                      - name: s3-endpoint
+                        value: placeholder
+                      - name: s3-bucket
+                        value: placeholder
+                      - name: file-key
+                        value: data/hello.txt
+                  templates:
+                    - name: main
+                      steps:
+                        - - name: run-dag
+                            template: process
+                            arguments:
+                              parameters:
+                                - name: file-key
+                                  value: '{{workflow.parameters.file-key}}'
+                    - name: process
+                      inputs:
+                        parameters:
+                          - name: file-key
+                      dag:
+                        tasks:
+                          - name: consume
+                            template: consume
+                            arguments:
+                              artifacts:
+                                - name: data-file
+                                  s3:
+                                    endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                    insecure: true
+                                    bucket: '{{workflow.parameters.s3-bucket}}'
+                                    key: '{{inputs.parameters.file-key}}'
+                                    accessKeySecret:
+                                      name: minio-creds
+                                      key: access-key
+                                    secretKeySecret:
+                                      name: minio-creds
+                                      key: secret-key
+                                  archive:
+                                    none: {}
+                    - name: consume
+                      inputs:
+                        artifacts:
+                          - name: data-file
+                            path: /data/input.txt
+                      script:
+                        image: alpine:3
+                        command: [sh, -e]
+                        source: |
+                          grep -q "hello from s3" /data/input.txt
+                """;
+
+        Workflow wf = patchEndpointAndBucket(workflowYaml);
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+            assertTrue(run.succeeded(),
+                    "DAG task: {{inputs.parameters.*}} in S3 artifact key must be substituted before download");
+        }
+    }
+
+    @Test
+    void stepsInputsParamSubstitutedInS3ArtifactKey() throws Exception {
+        String workflowYaml = """
+                apiVersion: argoproj.io/v1alpha1
+                kind: Workflow
+                metadata:
+                  name: steps-inputs-param-s3-key-test
+                spec:
+                  entrypoint: main
+                  arguments:
+                    parameters:
+                      - name: s3-endpoint
+                        value: placeholder
+                      - name: s3-bucket
+                        value: placeholder
+                      - name: file-key
+                        value: data/hello.txt
+                  templates:
+                    - name: main
+                      steps:
+                        - - name: run-steps
+                            template: process
+                            arguments:
+                              parameters:
+                                - name: file-key
+                                  value: '{{workflow.parameters.file-key}}'
+                    - name: process
+                      inputs:
+                        parameters:
+                          - name: file-key
+                      steps:
+                        - - name: consume
+                            template: consume
+                            arguments:
+                              artifacts:
+                                - name: data-file
+                                  s3:
+                                    endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                    insecure: true
+                                    bucket: '{{workflow.parameters.s3-bucket}}'
+                                    key: '{{inputs.parameters.file-key}}'
+                                    accessKeySecret:
+                                      name: minio-creds
+                                      key: access-key
+                                    secretKeySecret:
+                                      name: minio-creds
+                                      key: secret-key
+                                  archive:
+                                    none: {}
+                    - name: consume
+                      inputs:
+                        artifacts:
+                          - name: data-file
+                            path: /data/input.txt
+                      script:
+                        image: alpine:3
+                        command: [sh, -e]
+                        source: |
+                          grep -q "hello from s3" /data/input.txt
+                """;
+
+        Workflow wf = patchEndpointAndBucket(workflowYaml);
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+            assertTrue(run.succeeded(),
+                    "Steps step: {{inputs.parameters.*}} in S3 artifact key must be substituted before download");
+        }
+    }
+
+    @Test
+    void dagTaskOutputParamSubstitutedInS3ArtifactKey() throws Exception {
+        String workflowYaml = """
+                apiVersion: argoproj.io/v1alpha1
+                kind: Workflow
+                metadata:
+                  name: dag-task-output-param-s3-key-test
+                spec:
+                  entrypoint: main
+                  arguments:
+                    parameters:
+                      - name: s3-endpoint
+                        value: placeholder
+                      - name: s3-bucket
+                        value: placeholder
+                  templates:
+                    - name: main
+                      dag:
+                        tasks:
+                          - name: produce
+                            template: produce
+                          - name: consume
+                            depends: produce
+                            template: consume
+                            arguments:
+                              artifacts:
+                                - name: data-file
+                                  s3:
+                                    endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                    insecure: true
+                                    bucket: '{{workflow.parameters.s3-bucket}}'
+                                    key: '{{tasks.produce.outputs.parameters.file-key}}'
+                                    accessKeySecret:
+                                      name: minio-creds
+                                      key: access-key
+                                    secretKeySecret:
+                                      name: minio-creds
+                                      key: secret-key
+                                  archive:
+                                    none: {}
+                    - name: produce
+                      outputs:
+                        parameters:
+                          - name: file-key
+                            valueFrom:
+                              path: /tmp/key.txt
+                      script:
+                        image: alpine:3
+                        command: [sh, -e]
+                        source: |
+                          printf 'data/hello.txt' > /tmp/key.txt
+                    - name: consume
+                      inputs:
+                        artifacts:
+                          - name: data-file
+                            path: /data/input.txt
+                      script:
+                        image: alpine:3
+                        command: [sh, -e]
+                        source: |
+                          grep -q "hello from s3" /data/input.txt
+                """;
+
+        Workflow wf = patchEndpointAndBucket(workflowYaml);
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+            assertTrue(run.succeeded(),
+                    "DAG task: {{tasks.X.outputs.parameters.*}} in S3 artifact key must be substituted before download");
+        }
+    }
+
+    @Test
+    void stepsOutputParamSubstitutedInS3ArtifactKey() throws Exception {
+        String workflowYaml = """
+                apiVersion: argoproj.io/v1alpha1
+                kind: Workflow
+                metadata:
+                  name: steps-output-param-s3-key-test
+                spec:
+                  entrypoint: main
+                  arguments:
+                    parameters:
+                      - name: s3-endpoint
+                        value: placeholder
+                      - name: s3-bucket
+                        value: placeholder
+                  templates:
+                    - name: main
+                      steps:
+                        - - name: produce
+                            template: produce
+                        - - name: consume
+                            template: consume
+                            arguments:
+                              artifacts:
+                                - name: data-file
+                                  s3:
+                                    endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                    insecure: true
+                                    bucket: '{{workflow.parameters.s3-bucket}}'
+                                    key: '{{steps.produce.outputs.parameters.file-key}}'
+                                    accessKeySecret:
+                                      name: minio-creds
+                                      key: access-key
+                                    secretKeySecret:
+                                      name: minio-creds
+                                      key: secret-key
+                                  archive:
+                                    none: {}
+                    - name: produce
+                      outputs:
+                        parameters:
+                          - name: file-key
+                            valueFrom:
+                              path: /tmp/key.txt
+                      script:
+                        image: alpine:3
+                        command: [sh, -e]
+                        source: |
+                          printf 'data/hello.txt' > /tmp/key.txt
+                    - name: consume
+                      inputs:
+                        artifacts:
+                          - name: data-file
+                            path: /data/input.txt
+                      script:
+                        image: alpine:3
+                        command: [sh, -e]
+                        source: |
+                          grep -q "hello from s3" /data/input.txt
+                """;
+
+        Workflow wf = patchEndpointAndBucket(workflowYaml);
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+            assertTrue(run.succeeded(),
+                    "Steps step: {{steps.X.outputs.parameters.*}} in S3 artifact key must be substituted before download");
         }
     }
 

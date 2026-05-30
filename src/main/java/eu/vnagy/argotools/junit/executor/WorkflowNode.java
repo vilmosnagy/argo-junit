@@ -28,6 +28,14 @@ public sealed interface WorkflowNode permits DagRun, PodRun, StepsRun, Uninitial
 
     /** Current (final) attempt's direct child nodes; empty for leaf nodes. */
     default List<WorkflowNode> children() { return List.of(); }
+    /** Human-readable error message set when {@link #errored()} is true; empty string otherwise. */
+    default String message() {
+        return children().stream()
+                .map(WorkflowNode::message)
+                .filter(m -> !m.isEmpty())
+                .findFirst()
+                .orElse("");
+    }
     /** Total completed attempts (0 = not yet run, 1 = ran once, N = retried N-1 times). */
     default int attempts() { return 0; }
     /** Child-node maps from each failed attempt before the final one, in order. */

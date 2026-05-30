@@ -198,6 +198,7 @@ public final class DagRun implements WorkflowNode {
                 spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
 
                 Map<String, Path> resolvedArtifacts = new LinkedHashMap<>();
+                String artifactError = null;
                 for (var entry : spec.artifactArgs().entrySet()) {
                     String artName = entry.getKey();
                     Artifact art = entry.getValue();
@@ -206,20 +207,31 @@ public final class DagRun implements WorkflowNode {
                         localCtx.resolveArtifactFrom(resolvedFrom)
                                 .ifPresent(p -> resolvedArtifacts.put(artName, p));
                     } else {
-                        Artifact substituted = ExecutionContext.substituteArtifact(art, localCtx, resolvedArgs);
-                        localCtx.findDriver(substituted).ifPresent(driver -> {
+                        Map<String, String> artSubstParams = new LinkedHashMap<>(inputParams);
+                        artSubstParams.putAll(resolvedArgs);
+                        Artifact substituted = ExecutionContext.substituteArtifact(art, localCtx, artSubstParams);
+                        var driverOpt = localCtx.findDriver(substituted);
+                        if (driverOpt.isPresent()) {
                             try {
-                                Path downloaded = driver.download(substituted, localCtx.tmpDir,
+                                Path downloaded = driverOpt.get().download(substituted, localCtx.tmpDir,
                                         localCtx.k8sClient, localCtx.namespace);
                                 resolvedArtifacts.put(artName, downloaded);
                                 log.debug("Dag '{}': task '{}' downloaded artifact '{}' from external source",
                                         name, spec.name(), artName);
                             } catch (Exception e) {
-                                log.warn("Dag '{}': task '{}' failed to download artifact '{}': {}",
-                                        name, spec.name(), artName, e.getMessage());
+                                String s3Key = substituted.getS3() != null ? substituted.getS3().getKey() : "?";
+                                artifactError = "artifact '" + artName + "': no such object: " + s3Key;
+                                log.warn("Dag '{}': task '{}' failed to download artifact '{}' (key='{}'): {}",
+                                        name, spec.name(), artName, s3Key, e.getMessage());
+                                break;
                             }
-                        });
+                        }
                     }
+                }
+                if (artifactError != null) {
+                    WorkflowNode node = currentTasks.get(spec.name());
+                    if (node instanceof PodRun pod) pod.errorWith(artifactError);
+                    return CompletableFuture.completedFuture(node);
                 }
                 ExecutionContext podCtx = resolvedArtifacts.isEmpty()
                         ? localCtx : localCtx.withInputArtifacts(resolvedArtifacts);

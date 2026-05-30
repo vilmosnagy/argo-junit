@@ -94,6 +94,7 @@ public final class PodRun implements WorkflowNode {
     private final List<Attempt> podAttempts = new CopyOnWriteArrayList<>();
     private volatile Map<String, Path> collectedArtifacts = Map.of();
     private volatile Map<String, String> collectedOutputParams = Map.of();
+    private volatile String message = "";
 
     /** Plan constructor: parses the template once so executeAsync never touches argo model classes. */
     PodRun(String name, Template template) {
@@ -229,6 +230,9 @@ public final class PodRun implements WorkflowNode {
 
     @Override public void skip() { this.status = Status.SKIPPED; }
     @Override public void omit() { this.status = Status.OMITTED; }
+    /** Pre-empt execution with an error message (e.g. artifact download failure). */
+    void errorWith(String msg) { this.message = msg; this.status = Status.ERRORED; }
+    @Override public String message() { return message; }
 
     @Override
     public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
@@ -238,6 +242,7 @@ public final class PodRun implements WorkflowNode {
             } catch (Exception e) {
                 log.error("Pod '{}': execution error", name, e);
                 this.status = Status.ERRORED;
+                this.message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             }
             return (WorkflowNode) this;
         }, ctx.threadPool);

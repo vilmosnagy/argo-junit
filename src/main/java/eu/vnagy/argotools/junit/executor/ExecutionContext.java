@@ -2,8 +2,10 @@ package eu.vnagy.argotools.junit.executor;
 
 import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.model.Artifact;
+import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1SecretKeySelector;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Volume;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
+import eu.vnagy.argotools.junit.model.S3Artifact;
 import eu.vnagy.argotools.junit.model.Template;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import org.slf4j.Logger;
@@ -165,6 +167,35 @@ final class ExecutionContext {
     /** Returns the first driver that handles the given artifact's location type, if any. */
     Optional<ArtifactDriver> findDriver(Artifact artifact) {
         return artifactDrivers.stream().filter(d -> d.supports(artifact)).findFirst();
+    }
+
+    /** Returns a copy of {@code art} with any parameter placeholders in S3 fields substituted. */
+    static Artifact substituteArtifact(Artifact art, ExecutionContext ctx, Map<String, String> inputParams) {
+        if (art.getS3() == null) return art;
+        S3Artifact orig = art.getS3();
+        S3Artifact s3 = new S3Artifact();
+        s3.setEndpoint(orig.getEndpoint() != null ? ctx.substitute(orig.getEndpoint(), inputParams) : null);
+        s3.setBucket(orig.getBucket() != null ? ctx.substitute(orig.getBucket(), inputParams) : null);
+        s3.setKey(orig.getKey() != null ? ctx.substitute(orig.getKey(), inputParams) : null);
+        s3.setInsecure(orig.getInsecure());
+        s3.setRegion(orig.getRegion());
+        if (orig.getAccessKeySecret() != null) {
+            var ref = new IoK8sApiCoreV1SecretKeySelector();
+            ref.setName(ctx.substitute(orig.getAccessKeySecret().getName(), inputParams));
+            ref.setKey(orig.getAccessKeySecret().getKey());
+            s3.setAccessKeySecret(ref);
+        }
+        if (orig.getSecretKeySecret() != null) {
+            var ref = new IoK8sApiCoreV1SecretKeySelector();
+            ref.setName(ctx.substitute(orig.getSecretKeySecret().getName(), inputParams));
+            ref.setKey(orig.getSecretKeySecret().getKey());
+            s3.setSecretKeySecret(ref);
+        }
+        Artifact result = new Artifact();
+        result.setName(art.getName());
+        result.setS3(s3);
+        result.setArchive(art.getArchive());
+        return result;
     }
 
     /**

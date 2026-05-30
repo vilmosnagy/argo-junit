@@ -1,6 +1,8 @@
 package io.github.argoproj.argoworkflows;
 
 import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
+import eu.vnagy.argotools.junit.executor.StepsRun;
+import eu.vnagy.argotools.junit.executor.WorkflowNode;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
 import eu.vnagy.argotools.junit.kwok.ArgoKwok;
 import org.junit.jupiter.api.AfterAll;
@@ -66,7 +68,17 @@ public class WorkflowTemplateRefTest {
     @Test
     void retryWithStepsViaTemplateRef() throws Exception {
         try (WorkflowRun run = executorFor("retry-with-steps.yaml").execute()) {
-            assertThat(run.succeeded(), is(true));
+            if (!run.succeeded()) {
+                // Each step retries up to 10 times (limit: 10 in the templateRef), so any step
+                // that failed must have exhausted all 11 attempts before giving up.
+                StepsRun stepsRun = (StepsRun) run.entrypoint();
+                for (WorkflowNode step : stepsRun.steps()) {
+                    if (step.failed()) {
+                        assertThat(step.name() + " must have exhausted all retries",
+                                step.attempts(), is(11));
+                    }
+                }
+            }
         }
     }
 

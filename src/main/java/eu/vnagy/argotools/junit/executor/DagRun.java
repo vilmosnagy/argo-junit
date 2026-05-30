@@ -1,5 +1,6 @@
 package eu.vnagy.argotools.junit.executor;
 
+import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.DAGTask;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
@@ -20,7 +21,7 @@ public final class DagRun implements WorkflowNode {
     private static final Logger log = LoggerFactory.getLogger(DagRun.class);
 
     private record DagTaskSpec(String name, DependsExpression depends, Map<String, String> args,
-                               Map<String, String> artifactArgs,
+                               Map<String, Artifact> artifactArgs,
                                Template taskTemplate, String childOwner) {}
 
     private final String name;
@@ -101,8 +102,9 @@ public final class DagRun implements WorkflowNode {
 
         Map<String, Set<String>> needed = new LinkedHashMap<>();
         for (DagTaskSpec spec : builtSpecs) {
-            for (String from : spec.artifactArgs().values()) {
-                Matcher m = ExecutionContext.TASK_ARTIFACT_FROM.matcher(from.trim());
+            for (Artifact art : spec.artifactArgs().values()) {
+                if (art.getFrom() == null) continue;
+                Matcher m = ExecutionContext.TASK_ARTIFACT_FROM.matcher(art.getFrom().trim());
                 if (m.matches()) {
                     needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
                 }
@@ -196,8 +198,29 @@ public final class DagRun implements WorkflowNode {
                 spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
 
                 Map<String, Path> resolvedArtifacts = new LinkedHashMap<>();
-                spec.artifactArgs().forEach((artName, from) ->
-                        localCtx.resolveArtifactFrom(from).ifPresent(p -> resolvedArtifacts.put(artName, p)));
+                for (var entry : spec.artifactArgs().entrySet()) {
+                    String artName = entry.getKey();
+                    Artifact art = entry.getValue();
+                    if (art.getFrom() != null) {
+                        String resolvedFrom = localCtx.substitute(art.getFrom(), resolvedArgs);
+                        localCtx.resolveArtifactFrom(resolvedFrom)
+                                .ifPresent(p -> resolvedArtifacts.put(artName, p));
+                    } else {
+                        Artifact substituted = ExecutionContext.substituteArtifact(art, localCtx, resolvedArgs);
+                        localCtx.findDriver(substituted).ifPresent(driver -> {
+                            try {
+                                Path downloaded = driver.download(substituted, localCtx.tmpDir,
+                                        localCtx.k8sClient, localCtx.namespace);
+                                resolvedArtifacts.put(artName, downloaded);
+                                log.debug("Dag '{}': task '{}' downloaded artifact '{}' from external source",
+                                        name, spec.name(), artName);
+                            } catch (Exception e) {
+                                log.warn("Dag '{}': task '{}' failed to download artifact '{}': {}",
+                                        name, spec.name(), artName, e.getMessage());
+                            }
+                        });
+                    }
+                }
                 ExecutionContext podCtx = resolvedArtifacts.isEmpty()
                         ? localCtx : localCtx.withInputArtifacts(resolvedArtifacts);
                 podCtx = podCtx.withRequestedOutputArtifacts(
@@ -302,14 +325,15 @@ public final class DagRun implements WorkflowNode {
         return Collections.unmodifiableMap(args);
     }
 
-    private static Map<String, String> resolveArtifactArgs(DAGTask task) {
+    private static Map<String, Artifact> resolveArtifactArgs(DAGTask task) {
         if (task.getArguments() == null || task.getArguments().getArtifacts() == null) return Map.of();
-        Map<String, String> args = new LinkedHashMap<>();
+        Map<String, Artifact> args = new LinkedHashMap<>();
         for (var a : task.getArguments().getArtifacts()) {
-            if (a.getFrom() != null) args.put(a.getName(), a.getFrom());
+            args.put(a.getName(), a);
         }
         return Collections.unmodifiableMap(args);
     }
+
 
     private static List<DAGTask> topologicalSort(List<DAGTask> tasks) {
         Map<String, DAGTask> byName = new LinkedHashMap<>();

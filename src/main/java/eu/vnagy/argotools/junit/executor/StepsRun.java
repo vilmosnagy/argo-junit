@@ -200,9 +200,10 @@ public final class StepsRun implements WorkflowNode {
                                             name, spec.name(), artName);
                                 } catch (Exception e) {
                                     String s3Key = substituted.getS3() != null ? substituted.getS3().getKey() : "?";
-                                    artifactError = "artifact '" + artName + "' (key='" + s3Key + "'): " + e.getMessage();
+                                    String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
+                                    artifactError = "artifact '" + artName + "' (key='" + s3Key + "'): " + detail;
                                     log.warn("Steps '{}': step '{}' failed to download artifact '{}' (key='{}'): {}",
-                                            name, spec.name(), artName, s3Key, e.getMessage());
+                                            name, spec.name(), artName, s3Key, detail, e);
                                     break;
                                 }
                             }

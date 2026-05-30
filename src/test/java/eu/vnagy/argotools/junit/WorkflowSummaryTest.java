@@ -11,13 +11,22 @@ import eu.vnagy.argotools.junit.model.Workflow;
 import eu.vnagy.argotools.junit.testutil.MinioContainer;
 import eu.vnagy.argotools.junit.testutil.RetryOutcomeGate;
 import eu.vnagy.argotools.junit.util.WorkflowSummary;
+import eu.vnagy.argotools.junit.testutil.LoggerExtension;
 import io.fabric8.kubernetes.api.model.SecretBuilder;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
+import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.Base64;
 import java.util.Map;
 
@@ -275,11 +284,14 @@ class WorkflowSummaryTest {
 
         static final String BUCKET = "summary-errored-artifact-test";
 
+        @RegisterExtension
+        LoggerExtension loggerExtension = new LoggerExtension();
+
         KwokContainer kwok;
         MinioContainer minio;
 
         @BeforeAll
-        void setup() {
+        void setup() throws IOException {
             minio = new MinioContainer();
             minio.start();
             minio.createBucket(BUCKET);
@@ -301,6 +313,29 @@ class WorkflowSummaryTest {
                                     "secret-key", Base64.getEncoder().encodeToString("wrong-secret-key".getBytes())))
                             .build())
                     .create();
+
+            // Upload a truncated tar.gz: toByteArray() is called after tar.finish() but before
+            // gzip.close(), so the 8-byte gzip trailer (CRC32 + ISIZE) has not been written yet.
+            // extractTarGz reads all compressed data successfully, then hits EOF when verifying
+            // the trailer and throws EOFException with a null message.
+            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+            try (GzipCompressorOutputStream gzip = new GzipCompressorOutputStream(buf);
+                 TarArchiveOutputStream tar = new TarArchiveOutputStream(gzip)) {
+                byte[] content = "hello".getBytes();
+                TarArchiveEntry entry = new TarArchiveEntry("file.txt");
+                entry.setSize(content.length);
+                tar.putArchiveEntry(entry);
+                tar.write(content);
+                tar.closeArchiveEntry();
+                tar.finish();
+                byte[] truncated = buf.toByteArray(); // gzip trailer not written yet
+                try (var s3 = minio.createClient()) {
+                    s3.putObject(PutObjectRequest.builder()
+                            .bucket(BUCKET)
+                            .key("data/corrupt.tar.gz")
+                            .build(), RequestBody.fromBytes(truncated));
+                }
+            }
         }
 
         @AfterAll
@@ -774,6 +809,173 @@ class WorkflowSummaryTest {
                     STEP          DURATION  MESSAGE
                      ✗ main                 error
                      └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): Secret 'does-not-exist-secret' not found in namespace 'default'
+                    """));
+        }
+
+        @Test
+        void dagTaskEofExceptionShowsClassNameWhenMessageIsNull() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: dag-eof-null-message-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          dag:
+                            tasks:
+                              - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/corrupt.tar.gz
+                                        accessKeySecret:
+                                          name: minio-creds
+                                          key: access-key
+                                        secretKeySecret:
+                                          name: minio-creds
+                                          key: secret-key
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Errored
+
+                    STEP          DURATION  MESSAGE
+                     ✗ main                 error
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/corrupt.tar.gz'): java.io.EOFException
+                    """));
+        }
+
+        @Test
+        void dagTaskEofExceptionLogsStackTrace() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: dag-eof-log-stacktrace-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          dag:
+                            tasks:
+                              - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/corrupt.tar.gz
+                                        accessKeySecret:
+                                          name: minio-creds
+                                          key: access-key
+                                        secretKeySecret:
+                                          name: minio-creds
+                                          key: secret-key
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            boolean warnHasStackTrace = loggerExtension.events().stream()
+                    .filter(e -> e.getFormattedMessage().contains("data/corrupt.tar.gz"))
+                    .anyMatch(e -> e.getThrowableProxy() != null);
+            assertThat("WARN log for artifact download failure includes stack trace", warnHasStackTrace, is(true));
+        }
+
+        @Test
+        void stepsStepEofExceptionShowsClassNameWhenMessageIsNull() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: steps-eof-null-message-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          steps:
+                            - - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/corrupt.tar.gz
+                                        accessKeySecret:
+                                          name: minio-creds
+                                          key: access-key
+                                        secretKeySecret:
+                                          name: minio-creds
+                                          key: secret-key
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Errored
+
+                    STEP          DURATION  MESSAGE
+                     ✗ main                 error
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/corrupt.tar.gz'): java.io.EOFException
                     """));
         }
 

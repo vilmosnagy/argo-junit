@@ -20,8 +20,8 @@ public final class DagRun implements WorkflowNode {
 
     private static final Logger log = LoggerFactory.getLogger(DagRun.class);
 
-    private record DagTaskSpec(String name, DependsExpression depends, Map<String, String> args,
-                               Map<String, Artifact> artifactArgs,
+    private record DagTaskSpec(String name, DependsExpression depends, String when,
+                               Map<String, String> args, Map<String, Artifact> artifactArgs,
                                Template taskTemplate, String childOwner) {}
 
     private final String name;
@@ -91,7 +91,7 @@ public final class DagRun implements WorkflowNode {
             String childOwner = t.getTemplate() != null ? owningWt
                     : t.getTemplateRef() != null ? t.getTemplateRef().getName() : null;
             builtSpecs.add(new DagTaskSpec(t.getName(),
-                    new DependsExpression(t.getDepends()), resolveArgs(t), resolveArtifactArgs(t),
+                    new DependsExpression(t.getDepends()), t.getWhen(), resolveArgs(t), resolveArtifactArgs(t),
                     taskTemplate, childOwner));
             WorkflowNode child = (taskTemplate == null || nowConstructing.contains(taskTemplate.getName()))
                     ? new UninitializedNode(t.getName(), taskTemplate, childOwner)
@@ -207,6 +207,17 @@ public final class DagRun implements WorkflowNode {
 
                 Map<String, String> resolvedArgs = new LinkedHashMap<>();
                 spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
+
+                if (spec.when() != null && !spec.when().isBlank()) {
+                    Map<String, String> whenParams = new LinkedHashMap<>(inputParams);
+                    whenParams.putAll(resolvedArgs);
+                    String evaluated = localCtx.substitute(spec.when(), whenParams);
+                    if (!localCtx.evaluateWhen(evaluated)) {
+                        log.debug("Dag '{}': task '{}' omitted by when expression", name, spec.name());
+                        currentTasks.get(spec.name()).omit();
+                        return CompletableFuture.completedFuture(currentTasks.get(spec.name()));
+                    }
+                }
 
                 Map<String, Path> resolvedArtifacts = new LinkedHashMap<>();
                 String artifactError = null;

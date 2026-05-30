@@ -33,6 +33,7 @@ public final class StepsRun implements WorkflowNode {
     private final Map<String, Set<String>> neededArtifacts;
     private volatile int attempts;
     private final List<Map<String, WorkflowNode>> attemptHistory = new CopyOnWriteArrayList<>();
+    private volatile Map<String, Path> collectedArtifacts = Map.of();
     private volatile boolean skipped;
     private volatile boolean omitted;
 
@@ -83,6 +84,16 @@ public final class StepsRun implements WorkflowNode {
                     if (m.matches()) {
                         needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
                     }
+                }
+            }
+        }
+        // Also mark artifacts needed by the template's own output declarations
+        if (template.getOutputs() != null && template.getOutputs().getArtifacts() != null) {
+            for (var art : template.getOutputs().getArtifacts()) {
+                if (art.getFrom() == null) continue;
+                Matcher m = ExecutionContext.STEP_ARTIFACT_FROM.matcher(art.getFrom().trim());
+                if (m.matches()) {
+                    needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
                 }
             }
         }
@@ -244,6 +255,20 @@ public final class StepsRun implements WorkflowNode {
                                                         spec.name(), outParams.size());
                                                 localCtx.stepOutputParams.put(spec.name(), outParams);
                                             }
+                                        } else if (result instanceof DagRun dag) {
+                                            Map<String, Path> artifacts = dag.collectedArtifacts();
+                                            if (!artifacts.isEmpty()) {
+                                                log.debug("Step '{}': {} output artifact(s) collected",
+                                                        spec.name(), artifacts.size());
+                                                localCtx.stepArtifacts.put(spec.name(), artifacts);
+                                            }
+                                        } else if (result instanceof StepsRun steps) {
+                                            Map<String, Path> artifacts = steps.collectedArtifacts();
+                                            if (!artifacts.isEmpty()) {
+                                                log.debug("Step '{}': {} output artifact(s) collected",
+                                                        spec.name(), artifacts.size());
+                                                localCtx.stepArtifacts.put(spec.name(), artifacts);
+                                            }
                                         }
                                         return result;
                                     }));
@@ -259,6 +284,17 @@ public final class StepsRun implements WorkflowNode {
                 }))
                 .thenApply(_ -> {
                     log.debug("Steps '{}': all groups completed", name);
+                    if (originalTemplate.getOutputs() != null
+                            && originalTemplate.getOutputs().getArtifacts() != null) {
+                        Map<String, Path> outputs = new LinkedHashMap<>();
+                        for (var art : originalTemplate.getOutputs().getArtifacts()) {
+                            if (art.getFrom() != null) {
+                                localCtx.resolveArtifactFrom(art.getFrom())
+                                        .ifPresent(p -> outputs.put(art.getName(), p));
+                            }
+                        }
+                        if (!outputs.isEmpty()) this.collectedArtifacts = Map.copyOf(outputs);
+                    }
                     return (WorkflowNode) this;
                 });
     }
@@ -268,6 +304,8 @@ public final class StepsRun implements WorkflowNode {
         if (node == null) throw new IllegalArgumentException("No step named: " + stepName);
         return node;
     }
+
+    public Map<String, Path> collectedArtifacts() { return collectedArtifacts; }
 
     public Collection<WorkflowNode> steps() { return steps.values(); }
 

@@ -84,4 +84,48 @@ class ArtifactPassingTest {
             assertThat("consumer output contains file-two", consumer.logs().trim(), containsString("file-two"));
         }
     }
+
+    @Test
+    void artifactPassedThroughIntermediateDag() throws Exception {
+        try (WorkflowRun run = ArgoWorkflowExecutor
+                .from(Path.of(getClass().getResource("/artifact-dag-passthrough.yaml").toURI()))
+                .execute()) {
+
+            assertThat("workflow succeeded", run.succeeded(), is(true));
+
+            DagRun main = (DagRun) run.entrypoint();
+
+            DagRun produce = (DagRun) main.get("produce");
+            PodRun writer = (PodRun) produce.get("writer");
+            assertThat("writer succeeded", writer.succeeded(), is(true));
+
+            DagRun consume = (DagRun) main.get("consume");
+            PodRun reader = (PodRun) consume.get("reader");
+            assertThat("reader succeeded", reader.succeeded(), is(true));
+            assertThat("reader output contains artifact content",
+                    reader.logs().trim(), containsString("artifact content"));
+        }
+    }
+
+    @Test
+    void artifactPassedThroughIntermediateSteps() throws Exception {
+        try (WorkflowRun run = ArgoWorkflowExecutor
+                .from(Path.of(getClass().getResource("/artifact-steps-passthrough.yaml").toURI()))
+                .execute()) {
+
+            assertThat("workflow succeeded", run.succeeded(), is(true));
+
+            StepsRun main = (StepsRun) run.entrypoint();
+
+            StepsRun produce = (StepsRun) main.get("produce");
+            PodRun writer = (PodRun) produce.get("writer");
+            assertThat("writer succeeded", writer.succeeded(), is(true));
+
+            StepsRun consume = (StepsRun) main.get("consume");
+            PodRun reader = (PodRun) consume.get("reader");
+            assertThat("reader succeeded", reader.succeeded(), is(true));
+            assertThat("reader output contains artifact content",
+                    reader.logs().trim(), containsString("artifact content"));
+        }
+    }
 }

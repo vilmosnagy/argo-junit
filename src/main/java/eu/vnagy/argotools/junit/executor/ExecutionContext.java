@@ -49,6 +49,8 @@ final class ExecutionContext {
             Pattern.compile("\\{\\{steps\\.([^.}]+)\\.outputs\\.artifacts\\.([^}]+)\\}\\}");
     static final Pattern TASK_ARTIFACT_FROM =
             Pattern.compile("\\{\\{tasks\\.([^.}]+)\\.outputs\\.artifacts\\.([^}]+)\\}\\}");
+    private static final Pattern INPUTS_ARTIFACT_FROM =
+            Pattern.compile("\\{\\{inputs\\.artifacts\\.([^}]+)\\}\\}");
 
     final Map<String, Template> templateMap;
     final Map<String, String> workflowParams;
@@ -144,6 +146,7 @@ final class ExecutionContext {
                 .tmpDir(tmpDir)
                 .volumes(volumes)
                 .defaultRetryStrategy(defaultRetryStrategy)
+                .inputArtifacts(inputArtifacts)
                 .build();
     }
 
@@ -214,6 +217,10 @@ final class ExecutionContext {
         if (m.matches()) {
             Map<String, Path> arts = taskArtifacts.get(m.group(1));
             return arts != null ? Optional.ofNullable(arts.get(m.group(2))) : Optional.empty();
+        }
+        m = INPUTS_ARTIFACT_FROM.matcher(from);
+        if (m.matches()) {
+            return Optional.ofNullable(inputArtifacts.get(m.group(1)));
         }
         return Optional.empty();
     }

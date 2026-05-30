@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: artifact-dag-passthrough-
+spec:
+  entrypoint: main
+  templates:
+
+  - name: main
+    dag:
+      tasks:
+      - name: produce
+        template: producer-dag
+      - name: consume
+        template: passthrough-dag
+        depends: produce
+        arguments:
+          artifacts:
+          - name: data
+            from: "{{tasks.produce.outputs.artifacts.data}}"
+
+  - name: producer-dag
+    outputs:
+      artifacts:
+      - name: data
+        from: "{{tasks.writer.outputs.artifacts.data}}"
+    dag:
+      tasks:
+      - name: writer
+        template: write-file
+
+  - name: passthrough-dag
+    inputs:
+      artifacts:
+      - name: data
+    dag:
+      tasks:
+      - name: reader
+        template: read-file
+        arguments:
+          artifacts:
+          - name: data
+            from: "{{inputs.artifacts.data}}"
+
+  - name: write-file
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["echo 'artifact content' > /tmp/data.txt"]
+    outputs:
+      artifacts:
+      - name: data
+        path: /tmp/data.txt
+
+  - name: read-file
+    inputs:
+      artifacts:
+      - name: data
+        path: /tmp/data.txt
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["cat /tmp/data.txt"]

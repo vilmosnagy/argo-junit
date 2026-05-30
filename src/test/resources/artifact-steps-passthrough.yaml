@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: artifact-steps-passthrough-
+spec:
+  entrypoint: main
+  templates:
+
+  - name: main
+    steps:
+    - - name: produce
+        template: producer-steps
+    - - name: consume
+        template: passthrough-steps
+        arguments:
+          artifacts:
+          - name: data
+            from: "{{steps.produce.outputs.artifacts.data}}"
+
+  - name: producer-steps
+    outputs:
+      artifacts:
+      - name: data
+        from: "{{steps.writer.outputs.artifacts.data}}"
+    steps:
+    - - name: writer
+        template: write-file
+
+  - name: passthrough-steps
+    inputs:
+      artifacts:
+      - name: data
+    steps:
+    - - name: reader
+        template: read-file
+        arguments:
+          artifacts:
+          - name: data
+            from: "{{inputs.artifacts.data}}"
+
+  - name: write-file
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["echo 'artifact content' > /tmp/data.txt"]
+    outputs:
+      artifacts:
+      - name: data
+        path: /tmp/data.txt
+
+  - name: read-file
+    inputs:
+      artifacts:
+      - name: data
+        path: /tmp/data.txt
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["cat /tmp/data.txt"]

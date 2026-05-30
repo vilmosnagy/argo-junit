@@ -220,7 +220,7 @@ public final class DagRun implements WorkflowNode {
                                         name, spec.name(), artName);
                             } catch (Exception e) {
                                 String s3Key = substituted.getS3() != null ? substituted.getS3().getKey() : "?";
-                                artifactError = "artifact '" + artName + "': no such object: " + s3Key;
+                                artifactError = "artifact '" + artName + "' (key='" + s3Key + "'): " + e.getMessage();
                                 log.warn("Dag '{}': task '{}' failed to download artifact '{}' (key='{}'): {}",
                                         name, spec.name(), artName, s3Key, e.getMessage());
                                 break;

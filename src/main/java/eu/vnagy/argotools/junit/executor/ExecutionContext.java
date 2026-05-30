@@ -182,13 +182,13 @@ final class ExecutionContext {
         if (orig.getAccessKeySecret() != null) {
             var ref = new IoK8sApiCoreV1SecretKeySelector();
             ref.setName(ctx.substitute(orig.getAccessKeySecret().getName(), inputParams));
-            ref.setKey(orig.getAccessKeySecret().getKey());
+            ref.setKey(ctx.substitute(orig.getAccessKeySecret().getKey(), inputParams));
             s3.setAccessKeySecret(ref);
         }
         if (orig.getSecretKeySecret() != null) {
             var ref = new IoK8sApiCoreV1SecretKeySelector();
             ref.setName(ctx.substitute(orig.getSecretKeySecret().getName(), inputParams));
-            ref.setKey(orig.getSecretKeySecret().getKey());
+            ref.setKey(ctx.substitute(orig.getSecretKeySecret().getKey(), inputParams));
             s3.setSecretKeySecret(ref);
         }
         Artifact result = new Artifact();

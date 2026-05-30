@@ -11,11 +11,15 @@ import eu.vnagy.argotools.junit.model.Workflow;
 import eu.vnagy.argotools.junit.testutil.MinioContainer;
 import eu.vnagy.argotools.junit.testutil.RetryOutcomeGate;
 import eu.vnagy.argotools.junit.util.WorkflowSummary;
+import io.fabric8.kubernetes.api.model.SecretBuilder;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+
+import java.util.Base64;
+import java.util.Map;
 
 import java.nio.file.Path;
 
@@ -287,6 +291,16 @@ class WorkflowSummaryTest {
                     .inNamespace("default")
                     .resource(minio.credentialsSecret("minio-creds", "access-key", "secret-key"))
                     .create();
+            kwok.createClient()
+                    .secrets()
+                    .inNamespace("default")
+                    .resource(new SecretBuilder()
+                            .withNewMetadata().withName("bad-creds").endMetadata()
+                            .withData(Map.of(
+                                    "access-key", Base64.getEncoder().encodeToString("wrong-access-key".getBytes()),
+                                    "secret-key", Base64.getEncoder().encodeToString("wrong-secret-key".getBytes())))
+                            .build())
+                    .create();
         }
 
         @AfterAll
@@ -350,7 +364,7 @@ class WorkflowSummaryTest {
                     
                     STEP          DURATION  MESSAGE
                      ✗ main                 error
-                     └─✗ consume  {duration}  artifact 'data-file': no such object: data/does-not-exist.txt
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/does-not-exist.txt'): The specified key does not exist. {s3-sdk}
                     """));
         }
 
@@ -408,7 +422,358 @@ class WorkflowSummaryTest {
                     
                     STEP          DURATION  MESSAGE
                      ✗ main                 error
-                     └─✗ consume  {duration}  artifact 'data-file': no such object: data/does-not-exist.txt
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/does-not-exist.txt'): The specified key does not exist. {s3-sdk}
+                    """));
+        }
+
+        @Test
+        void dagTaskSecretKeyNotFoundShowsMessageInSummary() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: dag-secret-key-not-found-summary-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          dag:
+                            tasks:
+                              - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/hello.txt
+                                        accessKeySecret:
+                                          name: minio-creds
+                                          key: wrong-key
+                                        secretKeySecret:
+                                          name: minio-creds
+                                          key: secret-key
+                                      archive:
+                                        none: {}
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Errored
+
+                    STEP          DURATION  MESSAGE
+                     ✗ main                 error
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): Key 'wrong-key' not found in Secret 'minio-creds'
+                    """));
+        }
+
+        @Test
+        void stepsStepSecretKeyNotFoundShowsMessageInSummary() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: steps-secret-key-not-found-summary-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          steps:
+                            - - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/hello.txt
+                                        accessKeySecret:
+                                          name: minio-creds
+                                          key: wrong-key
+                                        secretKeySecret:
+                                          name: minio-creds
+                                          key: secret-key
+                                      archive:
+                                        none: {}
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Errored
+
+                    STEP          DURATION  MESSAGE
+                     ✗ main                 error
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): Key 'wrong-key' not found in Secret 'minio-creds'
+                    """));
+        }
+
+        @Test
+        void dagTaskWrongCredentialsShowsMessageInSummary() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: dag-wrong-creds-summary-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          dag:
+                            tasks:
+                              - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/hello.txt
+                                        accessKeySecret:
+                                          name: bad-creds
+                                          key: access-key
+                                        secretKeySecret:
+                                          name: bad-creds
+                                          key: secret-key
+                                      archive:
+                                        none: {}
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Errored
+
+                    STEP          DURATION  MESSAGE
+                     ✗ main                 error
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): The Access Key Id you provided does not exist in our records. {s3-sdk}
+                    """));
+        }
+
+        @Test
+        void stepsStepWrongCredentialsShowsMessageInSummary() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: steps-wrong-creds-summary-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          steps:
+                            - - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/hello.txt
+                                        accessKeySecret:
+                                          name: bad-creds
+                                          key: access-key
+                                        secretKeySecret:
+                                          name: bad-creds
+                                          key: secret-key
+                                      archive:
+                                        none: {}
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Errored
+
+                    STEP          DURATION  MESSAGE
+                     ✗ main                 error
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): The Access Key Id you provided does not exist in our records. {s3-sdk}
+                    """));
+        }
+
+        @Test
+        void dagTaskSecretNotFoundShowsMessageInSummary() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: dag-secret-not-found-summary-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          dag:
+                            tasks:
+                              - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/hello.txt
+                                        accessKeySecret:
+                                          name: does-not-exist-secret
+                                          key: access-key
+                                        secretKeySecret:
+                                          name: does-not-exist-secret
+                                          key: secret-key
+                                      archive:
+                                        none: {}
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Errored
+
+                    STEP          DURATION  MESSAGE
+                     ✗ main                 error
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): Secret 'does-not-exist-secret' not found in namespace 'default'
+                    """));
+        }
+
+        @Test
+        void stepsStepSecretNotFoundShowsMessageInSummary() throws Exception {
+            String yaml = """
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: steps-secret-not-found-summary-test
+                    spec:
+                      entrypoint: main
+                      arguments:
+                        parameters:
+                          - name: s3-endpoint
+                            value: placeholder
+                          - name: s3-bucket
+                            value: placeholder
+                      templates:
+                        - name: main
+                          steps:
+                            - - name: consume
+                                template: consume
+                                arguments:
+                                  artifacts:
+                                    - name: data-file
+                                      s3:
+                                        endpoint: '{{workflow.parameters.s3-endpoint}}'
+                                        insecure: true
+                                        bucket: '{{workflow.parameters.s3-bucket}}'
+                                        key: data/hello.txt
+                                        accessKeySecret:
+                                          name: does-not-exist-secret
+                                          key: access-key
+                                        secretKeySecret:
+                                          name: does-not-exist-secret
+                                          key: secret-key
+                                      archive:
+                                        none: {}
+                        - name: consume
+                          inputs:
+                            artifacts:
+                              - name: data-file
+                                path: /data/input.txt
+                          script:
+                            image: alpine:3
+                            command: [sh, -e]
+                            source: cat /data/input.txt
+                    """;
+
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Errored
+
+                    STEP          DURATION  MESSAGE
+                     ✗ main                 error
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): Secret 'does-not-exist-secret' not found in namespace 'default'
                     """));
         }
 
@@ -438,6 +803,7 @@ class WorkflowSummaryTest {
         return summary
                 .replaceAll("\\d+m \\d+s|\\d+s", "{duration}")
                 .replaceAll("\\{duration} {2,}", "{duration}  ")
-                .replaceAll("[0-9a-f]{12}", "{cid}");
+                .replaceAll("[0-9a-f]{12}", "{cid}")
+                .replaceAll("\\(Service: S3, Status Code: \\d+[^)]*\\)", "{s3-sdk}");
     }
 }

@@ -224,7 +224,7 @@ class DirectS3ArtifactArgTest {
         try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
             assertFalse(run.succeeded(), "Workflow must not succeed when S3 object is missing");
             assertTrue(run.errored(), "Workflow must be in errored state");
-            assertThat(WorkflowSummary.format(run), containsString("no such object: data/does-not-exist.txt"));
+            assertThat(WorkflowSummary.format(run), containsString("(key='data/does-not-exist.txt'): The specified key does not exist"));
         }
     }
 
@@ -280,7 +280,7 @@ class DirectS3ArtifactArgTest {
         try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
             assertFalse(run.succeeded(), "Workflow must not succeed when S3 object is missing");
             assertTrue(run.errored(), "Workflow must be in errored state");
-            assertThat(WorkflowSummary.format(run), containsString("no such object: data/does-not-exist.txt"));
+            assertThat(WorkflowSummary.format(run), containsString("(key='data/does-not-exist.txt'): The specified key does not exist"));
         }
     }
 

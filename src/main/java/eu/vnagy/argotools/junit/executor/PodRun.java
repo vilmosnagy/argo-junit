@@ -77,6 +77,7 @@ public final class PodRun implements WorkflowNode {
     private final List<ConfigMapRef> configMapRefs;
     private final Map<String, String> plainEnv;
     private final List<EnvRef> envRefs;
+    private final Map<String, IoK8sApiCoreV1Volume> templateVolumes;
     private final List<VolumeMountSpec> volumeMountSpecs;
     // Retry — raw template field; effective strategy (with templateDefaults fallback) resolved at run() time
     private final RetryStrategy templateRetryStrategy;
@@ -190,6 +191,15 @@ public final class PodRun implements WorkflowNode {
         }
         this.plainEnv = Map.copyOf(plainEnvMap);
         this.envRefs = List.copyOf(envRefList);
+
+        // template-level volumes — scoped to this template, merged with spec.volumes at run time
+        Map<String, IoK8sApiCoreV1Volume> tmplVols = new LinkedHashMap<>();
+        if (template.getVolumes() != null) {
+            for (IoK8sApiCoreV1Volume v : template.getVolumes()) {
+                tmplVols.put(v.getName(), v);
+            }
+        }
+        this.templateVolumes = Map.copyOf(tmplVols);
 
         // volumeMounts — parsed from container or script template
         var vmList = template.getScript() != null
@@ -499,10 +509,11 @@ public final class PodRun implements WorkflowNode {
         }
 
         // Bind-mount volumes
+        Map<String, IoK8sApiCoreV1Volume> vols = effectiveVolumes(ctx);
         for (VolumeMountSpec mount : volumeMountSpecs) {
-            IoK8sApiCoreV1Volume vol = ctx.volumes.get(mount.volumeName());
+            IoK8sApiCoreV1Volume vol = vols.get(mount.volumeName());
             if (vol == null) {
-                log.warn("Pod '{}': volume '{}' not found in workflow spec, skipping mount", name, mount.volumeName());
+                log.warn("Pod '{}': volume '{}' not found in workflow or template spec, skipping mount", name, mount.volumeName());
                 continue;
             }
             Path hostDir;
@@ -560,13 +571,23 @@ public final class PodRun implements WorkflowNode {
         }
     }
 
+    /** spec.volumes merged with template-level volumes; template-level entries take precedence. */
+    private Map<String, IoK8sApiCoreV1Volume> effectiveVolumes(ExecutionContext ctx) {
+        if (templateVolumes.isEmpty()) return ctx.volumes;
+        Map<String, IoK8sApiCoreV1Volume> merged = new LinkedHashMap<>(ctx.volumes);
+        merged.putAll(templateVolumes);
+        return merged;
+    }
+
     private Map<String, Path> materializeVolumes(ExecutionContext ctx, Map<String, String> inputParams)
             throws Exception {
-        if (ctx.volumes.isEmpty() || volumeMountSpecs.isEmpty()) return Map.of();
+        if (volumeMountSpecs.isEmpty()) return Map.of();
+        Map<String, IoK8sApiCoreV1Volume> vols = effectiveVolumes(ctx);
+        if (vols.isEmpty()) return Map.of();
         Map<String, Path> result = new LinkedHashMap<>();
         for (VolumeMountSpec mount : volumeMountSpecs) {
             if (result.containsKey(mount.volumeName())) continue;
-            IoK8sApiCoreV1Volume vol = ctx.volumes.get(mount.volumeName());
+            IoK8sApiCoreV1Volume vol = vols.get(mount.volumeName());
             if (vol == null || vol.getEmptyDir() != null) continue; // emptyDir is created fresh per attempt
             Path hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + mount.volumeName() + "-");
             if (vol.getConfigMap() != null) {

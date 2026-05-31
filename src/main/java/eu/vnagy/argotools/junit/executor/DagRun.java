@@ -2,22 +2,16 @@ package eu.vnagy.argotools.junit.executor;
 
 import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.DAGTask;
-import eu.vnagy.argotools.junit.model.Parameter;
-import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.regex.Matcher;
 import java.util.stream.Collectors;
 
-public final class DagRun implements WorkflowNode {
+public final class DagRun extends BaseCompositeRun implements WorkflowNode {
 
     private static final Logger log = LoggerFactory.getLogger(DagRun.class);
 
@@ -25,19 +19,10 @@ public final class DagRun implements WorkflowNode {
                                Map<String, String> args, Map<String, Artifact> artifactArgs,
                                Template taskTemplate, String childOwner) {}
 
-    private final String name;
-    private final Template originalTemplate;
     private final String owningWt;
-    private final RetryStrategy templateRetryStrategy;
     private final List<DagTaskSpec> specs;
     private volatile Map<String, WorkflowNode> tasks;
-    // taskName -> artifact names that downstream tasks consume from it
     private final Map<String, Set<String>> neededArtifacts;
-    private volatile int attempts;
-    private final List<Map<String, WorkflowNode>> attemptHistory = new CopyOnWriteArrayList<>();
-    private volatile Map<String, Path> collectedArtifacts = Map.of();
-    private volatile boolean skipped;
-    private volatile boolean omitted;
 
     /**
      * Plan constructor: validates structure, builds child plan nodes eagerly up to the first
@@ -49,10 +34,8 @@ public final class DagRun implements WorkflowNode {
      */
     DagRun(String name, Template template, Map<String, Template> templateMap, Set<String> constructing,
            String owningWt) {
-        this.name = name;
-        this.originalTemplate = template;
+        super(name, template, template.getRetryStrategy());
         this.owningWt = owningWt;
-        this.templateRetryStrategy = template.getRetryStrategy();
         List<DAGTask> dagTasks = template.getDag().getTasks();
 
         Set<String> taskNames = new LinkedHashSet<>();
@@ -92,7 +75,9 @@ public final class DagRun implements WorkflowNode {
             String childOwner = t.getTemplate() != null ? owningWt
                     : t.getTemplateRef() != null ? t.getTemplateRef().getName() : null;
             builtSpecs.add(new DagTaskSpec(t.getName(),
-                    new DependsExpression(t.getDepends()), t.getWhen(), resolveArgs(t), resolveArtifactArgs(t),
+                    new DependsExpression(t.getDepends()), t.getWhen(),
+                    resolveArgs(t.getArguments()),
+                    resolveArtifactArgs(t.getArguments()),
                     taskTemplate, childOwner));
             WorkflowNode child = (taskTemplate == null || nowConstructing.contains(taskTemplate.getName()))
                     ? new UninitializedNode(t.getName(), taskTemplate, childOwner)
@@ -102,30 +87,30 @@ public final class DagRun implements WorkflowNode {
         this.specs = Collections.unmodifiableList(builtSpecs);
         this.tasks = Collections.unmodifiableMap(initialTasks);
 
-        Map<String, Set<String>> needed = new LinkedHashMap<>();
-        for (DagTaskSpec spec : builtSpecs) {
-            for (Artifact art : spec.artifactArgs().values()) {
-                if (art.getFrom() == null) continue;
-                Matcher m = ExecutionContext.TASK_ARTIFACT_FROM.matcher(art.getFrom().trim());
-                if (m.matches()) {
-                    needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
-                }
-            }
-        }
-        // Also mark artifacts needed by the template's own output declarations
-        if (template.getOutputs() != null && template.getOutputs().getArtifacts() != null) {
-            for (var art : template.getOutputs().getArtifacts()) {
-                if (art.getFrom() == null) continue;
-                Matcher m = ExecutionContext.TASK_ARTIFACT_FROM.matcher(art.getFrom().trim());
-                if (m.matches()) {
-                    needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
-                }
-            }
-        }
-        Map<String, Set<String>> immutableNeeded = new LinkedHashMap<>();
-        needed.forEach((k, v) -> immutableNeeded.put(k, Set.copyOf(v)));
-        this.neededArtifacts = Collections.unmodifiableMap(immutableNeeded);
+        this.neededArtifacts = buildNeededArtifacts(
+                builtSpecs.stream().map(DagTaskSpec::artifactArgs).toList(),
+                ExecutionContext.TASK_ARTIFACT_FROM, template);
     }
+
+    // -------------------------------------------------------------------------
+    // BaseCompositeRun hooks
+    // -------------------------------------------------------------------------
+
+    @Override protected String typeName() { return "Dag"; }
+
+    @Override protected void resetNodes(ExecutionContext ctx) { this.tasks = buildTaskNodes(ctx); }
+
+    @Override protected Map<String, WorkflowNode> currentNodes() { return tasks; }
+
+    @Override
+    protected CompletableFuture<WorkflowNode> executeIteration(ExecutionContext ctx,
+            Map<String, String> inputParams, Map<String, WorkflowNode> nodes) {
+        return runTasks(ctx, inputParams, nodes);
+    }
+
+    // -------------------------------------------------------------------------
+    // DAG execution
+    // -------------------------------------------------------------------------
 
     /** Builds a fresh set of child nodes for a retry attempt, using the current template map. */
     private Map<String, WorkflowNode> buildTaskNodes(ExecutionContext ctx) {
@@ -141,42 +126,6 @@ public final class DagRun implements WorkflowNode {
             built.put(spec.name(), child);
         }
         return Collections.unmodifiableMap(built);
-    }
-
-    @Override
-    public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
-        ResolvedRetry retry = ResolvedRetry.from(templateRetryStrategy, ctx.defaultRetryStrategy);
-        return doExecute(ctx, inputParams, retry, 0, retry.backoffDuration(), Instant.now());
-    }
-
-    private CompletableFuture<WorkflowNode> doExecute(ExecutionContext ctx, Map<String, String> inputParams,
-            ResolvedRetry retry, int attempt, Duration currentBackoff, Instant retryStart) {
-        if (attempt > 0) {
-            log.debug("Dag '{}': retry attempt {}", name, attempt + 1);
-            this.tasks = buildTaskNodes(ctx);
-        }
-        Map<String, WorkflowNode> currentTasks = this.tasks;
-        return runTasks(ctx, inputParams, currentTasks).thenCompose(result -> {
-            this.attempts = attempt + 1;
-            if (!retry.shouldRetry(failed(), errored(), attempt + 1)) return CompletableFuture.completedFuture(result);
-            if (!retry.withinMaxDuration(retryStart)) {
-                log.debug("Dag '{}': maxDuration exceeded, stopping retries", name);
-                return CompletableFuture.completedFuture(result);
-            }
-            log.debug("Dag '{}': attempt {} {} — retrying (backoff={}ms)", name, attempt + 1,
-                    failed() ? "FAILED" : "ERRORED", currentBackoff.toMillis());
-            attemptHistory.add(currentTasks);
-            Duration nextBackoff = retry.nextBackoff(currentBackoff);
-            if (currentBackoff.isZero()) {
-                return doExecute(ctx, inputParams, retry, attempt + 1, nextBackoff, retryStart);
-            }
-            return CompletableFuture.supplyAsync(() -> {
-                try { Thread.sleep(currentBackoff.toMillis()); }
-                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-                return null;
-            }, ctx.threadPool).thenCompose(_ ->
-                    doExecute(ctx, inputParams, retry, attempt + 1, nextBackoff, retryStart));
-        });
     }
 
     private CompletableFuture<WorkflowNode> runTasks(ExecutionContext ctx, Map<String, String> inputParams,
@@ -208,14 +157,7 @@ public final class DagRun implements WorkflowNode {
 
                 Map<String, String> resolvedArgs = new LinkedHashMap<>();
                 spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
-                Template target = spec.taskTemplate();
-                if (target != null && target.getInputs() != null && target.getInputs().getParameters() != null) {
-                    for (Parameter p : target.getInputs().getParameters()) {
-                        if (!resolvedArgs.containsKey(p.getName()) && p.getValue() != null) {
-                            resolvedArgs.put(p.getName(), localCtx.substitute(p.getValue(), inputParams));
-                        }
-                    }
-                }
+                injectDefaultParams(spec.taskTemplate(), localCtx, inputParams, resolvedArgs);
 
                 if (spec.when() != null && !spec.when().isBlank()) {
                     Map<String, String> whenParams = new LinkedHashMap<>(inputParams);
@@ -228,85 +170,23 @@ public final class DagRun implements WorkflowNode {
                     }
                 }
 
-                Map<String, Path> resolvedArtifacts = new LinkedHashMap<>();
-                String artifactError = null;
-                for (var entry : spec.artifactArgs().entrySet()) {
-                    String artName = entry.getKey();
-                    Artifact art = entry.getValue();
-                    if (art.getFrom() != null) {
-                        String resolvedFrom = localCtx.substitute(art.getFrom(), resolvedArgs);
-                        localCtx.resolveArtifactFrom(resolvedFrom)
-                                .ifPresent(p -> resolvedArtifacts.put(artName, p));
-                    } else {
-                        Map<String, String> artSubstParams = new LinkedHashMap<>(inputParams);
-                        artSubstParams.putAll(resolvedArgs);
-                        Artifact substituted = ExecutionContext.substituteArtifact(art, localCtx, artSubstParams);
-                        var driverOpt = localCtx.findDriver(substituted);
-                        if (driverOpt.isPresent()) {
-                            try {
-                                Path downloaded = driverOpt.get().download(substituted, localCtx.tmpDir,
-                                        localCtx.k8sClient, localCtx.namespace);
-                                resolvedArtifacts.put(artName, downloaded);
-                                log.debug("Dag '{}': task '{}' downloaded artifact '{}' from external source",
-                                        name, spec.name(), artName);
-                            } catch (Exception e) {
-                                String s3Key = substituted.getS3() != null ? substituted.getS3().getKey() : "?";
-                                String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
-                                artifactError = "artifact '" + artName + "' (key='" + s3Key + "'): " + detail;
-                                log.warn("Dag '{}': task '{}' failed to download artifact '{}' (key='{}'): {}",
-                                        name, spec.name(), artName, s3Key, detail, e);
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (artifactError != null) {
+                var artResult = resolveAndDownload(
+                        spec.artifactArgs(), localCtx, inputParams, resolvedArgs, name, spec.name());
+                if (artResult.error() != null) {
                     WorkflowNode node = currentTasks.get(spec.name());
-                    if (node instanceof PodRun pod) pod.errorWith(artifactError);
+                    if (node instanceof PodRun pod) pod.errorWith(artResult.error());
                     return CompletableFuture.completedFuture(node);
                 }
-                ExecutionContext podCtx = resolvedArtifacts.isEmpty()
-                        ? localCtx : localCtx.withInputArtifacts(resolvedArtifacts);
+
+                ExecutionContext podCtx = artResult.resolved().isEmpty()
+                        ? localCtx : localCtx.withInputArtifacts(artResult.resolved());
                 podCtx = podCtx.withRequestedOutputArtifacts(
                         neededArtifacts.getOrDefault(spec.name(), Set.of()));
 
                 return currentTasks.get(spec.name()).executeAsync(podCtx, resolvedArgs);
             }, localCtx.threadPool)
-            .thenApply(result -> {
-                if (result instanceof PodRun pod) {
-                    pod.ip().ifPresent(ip -> {
-                        log.debug("Dag '{}': task '{}' daemon ip='{}'", name, spec.name(), ip);
-                        localCtx.taskIps.put(spec.name(), ip);
-                    });
-                    Map<String, Path> artifacts = pod.collectedArtifacts();
-                    if (!artifacts.isEmpty()) {
-                        log.debug("Dag '{}': task '{}' {} output artifact(s) collected",
-                                name, spec.name(), artifacts.size());
-                        localCtx.taskArtifacts.put(spec.name(), artifacts);
-                    }
-                    Map<String, String> outParams = pod.collectedOutputParams();
-                    if (!outParams.isEmpty()) {
-                        log.debug("Dag '{}': task '{}' {} output parameter(s) collected",
-                                name, spec.name(), outParams.size());
-                        localCtx.taskOutputParams.put(spec.name(), outParams);
-                    }
-                } else if (result instanceof DagRun dag) {
-                    Map<String, Path> artifacts = dag.collectedArtifacts();
-                    if (!artifacts.isEmpty()) {
-                        log.debug("Dag '{}': task '{}' {} output artifact(s) collected",
-                                name, spec.name(), artifacts.size());
-                        localCtx.taskArtifacts.put(spec.name(), artifacts);
-                    }
-                } else if (result instanceof StepsRun steps) {
-                    Map<String, Path> artifacts = steps.collectedArtifacts();
-                    if (!artifacts.isEmpty()) {
-                        log.debug("Dag '{}': task '{}' {} output artifact(s) collected",
-                                name, spec.name(), artifacts.size());
-                        localCtx.taskArtifacts.put(spec.name(), artifacts);
-                    }
-                }
-                return result;
-            });
+            .thenApply(result -> registerOutputs(result, spec.name(),
+                    localCtx.taskIps, localCtx.taskArtifacts, localCtx.taskOutputParams, null));
 
             futures.put(spec.name(), taskFuture);
         }
@@ -317,20 +197,14 @@ public final class DagRun implements WorkflowNode {
                 }))
                 .thenApply(_ -> {
                     log.debug("Dag '{}': all tasks completed", name);
-                    if (originalTemplate.getOutputs() != null
-                            && originalTemplate.getOutputs().getArtifacts() != null) {
-                        Map<String, Path> outputs = new LinkedHashMap<>();
-                        for (var art : originalTemplate.getOutputs().getArtifacts()) {
-                            if (art.getFrom() != null) {
-                                localCtx.resolveArtifactFrom(art.getFrom())
-                                        .ifPresent(p -> outputs.put(art.getName(), p));
-                            }
-                        }
-                        if (!outputs.isEmpty()) this.collectedArtifacts = Map.copyOf(outputs);
-                    }
+                    resolveOutputArtifacts(localCtx);
                     return (WorkflowNode) this;
                 });
     }
+
+    // -------------------------------------------------------------------------
+    // Public accessors
+    // -------------------------------------------------------------------------
 
     public WorkflowNode get(String taskName) {
         WorkflowNode node = tasks.get(taskName);
@@ -338,41 +212,11 @@ public final class DagRun implements WorkflowNode {
         return node;
     }
 
-    public Map<String, Path> collectedArtifacts() { return collectedArtifacts; }
-
     public Collection<WorkflowNode> tasks() { return tasks.values(); }
 
-    @Override public List<WorkflowNode> children() { return new ArrayList<>(tasks.values()); }
-    @Override public int attempts() { return attempts; }
-    @Override public List<Map<String, WorkflowNode>> attemptHistory() { return List.copyOf(attemptHistory); }
-
-    @Override public String name() { return name; }
-
-    @Override public boolean succeeded() {
-        if (skipped || omitted) return false;
-        return tasks.values().stream().allMatch(n -> n.succeeded() || n.skipped() || n.omitted());
-    }
-    @Override public boolean failed() {
-        if (skipped || omitted) return false;
-        return tasks.values().stream().anyMatch(WorkflowNode::failed);
-    }
-    @Override public boolean errored() {
-        if (skipped || omitted) return false;
-        return tasks.values().stream().anyMatch(WorkflowNode::errored);
-    }
-    @Override public void skip()        { this.skipped = true; }
-    @Override public void omit()        { this.omitted = true; }
-    @Override public boolean daemoned()  { return false; }
-    @Override public boolean skipped()  { return skipped; }
-    @Override public boolean omitted()  { return omitted; }
-    @Override public boolean running() {
-        if (skipped || omitted) return false;
-        return tasks.values().stream().anyMatch(WorkflowNode::running);
-    }
-    @Override public boolean pending() {
-        if (skipped || omitted) return false;
-        return tasks.values().stream().allMatch(WorkflowNode::pending);
-    }
+    // -------------------------------------------------------------------------
+    // Statics
+    // -------------------------------------------------------------------------
 
     private static Template resolveTaskTemplate(DAGTask task, Map<String, Template> map, String owningWt) {
         if (task.getTemplate() != null) {
@@ -386,25 +230,6 @@ public final class DagRun implements WorkflowNode {
             return map.get(task.getTemplateRef().getName() + "/" + task.getTemplateRef().getTemplate());
         return null;
     }
-
-    private static Map<String, String> resolveArgs(DAGTask task) {
-        if (task.getArguments() == null || task.getArguments().getParameters() == null) return Map.of();
-        Map<String, String> args = new LinkedHashMap<>();
-        for (var p : task.getArguments().getParameters()) {
-            if (p.getValue() != null) args.put(p.getName(), p.getValue());
-        }
-        return Collections.unmodifiableMap(args);
-    }
-
-    private static Map<String, Artifact> resolveArtifactArgs(DAGTask task) {
-        if (task.getArguments() == null || task.getArguments().getArtifacts() == null) return Map.of();
-        Map<String, Artifact> args = new LinkedHashMap<>();
-        for (var a : task.getArguments().getArtifacts()) {
-            args.put(a.getName(), a);
-        }
-        return Collections.unmodifiableMap(args);
-    }
-
 
     private static List<DAGTask> topologicalSort(List<DAGTask> tasks) {
         Map<String, DAGTask> byName = new LinkedHashMap<>();

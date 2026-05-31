@@ -1,22 +1,15 @@
 package eu.vnagy.argotools.junit.executor;
 
 import eu.vnagy.argotools.junit.model.Artifact;
-import eu.vnagy.argotools.junit.model.Parameter;
-import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import eu.vnagy.argotools.junit.model.WorkflowStep;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.file.Path;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.regex.Matcher;
 
-public final class StepsRun implements WorkflowNode {
+public final class StepsRun extends BaseCompositeRun implements WorkflowNode {
 
     private static final Logger log = LoggerFactory.getLogger(StepsRun.class);
 
@@ -24,19 +17,10 @@ public final class StepsRun implements WorkflowNode {
                             Map<String, Artifact> artifactArgs,
                             Template stepTemplate, String childOwner) {}
 
-    private final String name;
-    private final Template originalTemplate;
     private final String owningWt;
-    private final RetryStrategy templateRetryStrategy;
     private final List<List<StepSpec>> groups;
     private volatile Map<String, WorkflowNode> steps;
-    // stepName -> artifact names that downstream steps consume from it
     private final Map<String, Set<String>> neededArtifacts;
-    private volatile int attempts;
-    private final List<Map<String, WorkflowNode>> attemptHistory = new CopyOnWriteArrayList<>();
-    private volatile Map<String, Path> collectedArtifacts = Map.of();
-    private volatile boolean skipped;
-    private volatile boolean omitted;
 
     /**
      * Plan constructor: validates template references, builds child plan nodes eagerly up to the
@@ -48,10 +32,8 @@ public final class StepsRun implements WorkflowNode {
      */
     StepsRun(String name, Template template, Map<String, Template> templateMap, Set<String> constructing,
              String owningWt) {
-        this.name = name;
-        this.originalTemplate = template;
+        super(name, template, template.getRetryStrategy());
         this.owningWt = owningWt;
-        this.templateRetryStrategy = template.getRetryStrategy();
 
         Set<String> nowConstructing = new HashSet<>(constructing);
         nowConstructing.add(template.getName());
@@ -65,7 +47,9 @@ public final class StepsRun implements WorkflowNode {
                 String childOwner = step.getTemplate() != null ? owningWt
                         : step.getTemplateRef() != null ? step.getTemplateRef().getName() : null;
                 specGroup.add(new StepSpec(step.getName(), step.getWhen(),
-                        parseArgs(step), parseArtifactArgs(step), stepTemplate, childOwner));
+                        resolveArgs(step.getArguments()),
+                        resolveArtifactArgs(step.getArguments()),
+                        stepTemplate, childOwner));
                 WorkflowNode child = nowConstructing.contains(stepTemplate.getName())
                         ? new UninitializedNode(step.getName(), stepTemplate, childOwner)
                         : WorkflowNode.from(step.getName(), stepTemplate, templateMap, nowConstructing, childOwner);
@@ -76,32 +60,30 @@ public final class StepsRun implements WorkflowNode {
         this.groups = List.copyOf(builtGroups);
         this.steps = Collections.unmodifiableMap(initialSteps);
 
-        Map<String, Set<String>> needed = new LinkedHashMap<>();
-        for (List<StepSpec> group : builtGroups) {
-            for (StepSpec spec : group) {
-                for (Artifact art : spec.artifactArgs().values()) {
-                    if (art.getFrom() == null) continue;
-                    Matcher m = ExecutionContext.STEP_ARTIFACT_FROM.matcher(art.getFrom().trim());
-                    if (m.matches()) {
-                        needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
-                    }
-                }
-            }
-        }
-        // Also mark artifacts needed by the template's own output declarations
-        if (template.getOutputs() != null && template.getOutputs().getArtifacts() != null) {
-            for (var art : template.getOutputs().getArtifacts()) {
-                if (art.getFrom() == null) continue;
-                Matcher m = ExecutionContext.STEP_ARTIFACT_FROM.matcher(art.getFrom().trim());
-                if (m.matches()) {
-                    needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
-                }
-            }
-        }
-        Map<String, Set<String>> immutableNeeded = new LinkedHashMap<>();
-        needed.forEach((k, v) -> immutableNeeded.put(k, Set.copyOf(v)));
-        this.neededArtifacts = Collections.unmodifiableMap(immutableNeeded);
+        this.neededArtifacts = buildNeededArtifacts(
+                builtGroups.stream().flatMap(List::stream).map(StepSpec::artifactArgs).toList(),
+                ExecutionContext.STEP_ARTIFACT_FROM, template);
     }
+
+    // -------------------------------------------------------------------------
+    // BaseCompositeRun hooks
+    // -------------------------------------------------------------------------
+
+    @Override protected String typeName() { return "Steps"; }
+
+    @Override protected void resetNodes(ExecutionContext ctx) { this.steps = buildStepNodes(ctx); }
+
+    @Override protected Map<String, WorkflowNode> currentNodes() { return steps; }
+
+    @Override
+    protected CompletableFuture<WorkflowNode> executeIteration(ExecutionContext ctx,
+            Map<String, String> inputParams, Map<String, WorkflowNode> nodes) {
+        return runGroups(ctx, inputParams, nodes);
+    }
+
+    // -------------------------------------------------------------------------
+    // Steps execution
+    // -------------------------------------------------------------------------
 
     /** Builds a fresh set of child nodes for a retry attempt, using the current template map. */
     private Map<String, WorkflowNode> buildStepNodes(ExecutionContext ctx) {
@@ -118,42 +100,6 @@ public final class StepsRun implements WorkflowNode {
             }
         }
         return Collections.unmodifiableMap(built);
-    }
-
-    @Override
-    public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
-        ResolvedRetry retry = ResolvedRetry.from(templateRetryStrategy, ctx.defaultRetryStrategy);
-        return doExecute(ctx, inputParams, retry, 0, retry.backoffDuration(), Instant.now());
-    }
-
-    private CompletableFuture<WorkflowNode> doExecute(ExecutionContext ctx, Map<String, String> inputParams,
-            ResolvedRetry retry, int attempt, Duration currentBackoff, Instant retryStart) {
-        if (attempt > 0) {
-            log.debug("Steps '{}': retry attempt {}", name, attempt + 1);
-            this.steps = buildStepNodes(ctx);
-        }
-        Map<String, WorkflowNode> currentSteps = this.steps;
-        return runGroups(ctx, inputParams, currentSteps).thenCompose(result -> {
-            this.attempts = attempt + 1;
-            if (!retry.shouldRetry(failed(), errored(), attempt + 1)) return CompletableFuture.completedFuture(result);
-            if (!retry.withinMaxDuration(retryStart)) {
-                log.debug("Steps '{}': maxDuration exceeded, stopping retries", name);
-                return CompletableFuture.completedFuture(result);
-            }
-            log.debug("Steps '{}': attempt {} {} — retrying (backoff={}ms)", name, attempt + 1,
-                    failed() ? "FAILED" : "ERRORED", currentBackoff.toMillis());
-            attemptHistory.add(currentSteps);
-            Duration nextBackoff = retry.nextBackoff(currentBackoff);
-            if (currentBackoff.isZero()) {
-                return doExecute(ctx, inputParams, retry, attempt + 1, nextBackoff, retryStart);
-            }
-            return CompletableFuture.supplyAsync(() -> {
-                try { Thread.sleep(currentBackoff.toMillis()); }
-                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-                return null;
-            }, ctx.threadPool).thenCompose(_ ->
-                    doExecute(ctx, inputParams, retry, attempt + 1, nextBackoff, retryStart));
-        });
     }
 
     private CompletableFuture<WorkflowNode> runGroups(ExecutionContext ctx, Map<String, String> inputParams,
@@ -188,99 +134,26 @@ public final class StepsRun implements WorkflowNode {
 
                     Map<String, String> resolvedArgs = new LinkedHashMap<>();
                     spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
-                    Template target = spec.stepTemplate();
-                    if (target != null && target.getInputs() != null && target.getInputs().getParameters() != null) {
-                        for (Parameter p : target.getInputs().getParameters()) {
-                            if (!resolvedArgs.containsKey(p.getName()) && p.getValue() != null) {
-                                resolvedArgs.put(p.getName(), localCtx.substitute(p.getValue(), inputParams));
-                            }
-                        }
-                    }
+                    injectDefaultParams(spec.stepTemplate(), localCtx, inputParams, resolvedArgs);
 
-                    Map<String, Path> resolvedArtifacts = new LinkedHashMap<>();
-                    String artifactError = null;
-                    for (var entry : spec.artifactArgs().entrySet()) {
-                        String artName = entry.getKey();
-                        Artifact art = entry.getValue();
-                        if (art.getFrom() != null) {
-                            String resolvedFrom = localCtx.substitute(art.getFrom(), resolvedArgs);
-                            localCtx.resolveArtifactFrom(resolvedFrom)
-                                    .ifPresent(p -> resolvedArtifacts.put(artName, p));
-                        } else {
-                            Map<String, String> artSubstParams = new LinkedHashMap<>(inputParams);
-                            artSubstParams.putAll(resolvedArgs);
-                            Artifact substituted = ExecutionContext.substituteArtifact(art, localCtx, artSubstParams);
-                            var driverOpt = localCtx.findDriver(substituted);
-                            if (driverOpt.isPresent()) {
-                                try {
-                                    Path downloaded = driverOpt.get().download(substituted, localCtx.tmpDir,
-                                            localCtx.k8sClient, localCtx.namespace);
-                                    resolvedArtifacts.put(artName, downloaded);
-                                    log.debug("Steps '{}': step '{}' downloaded artifact '{}' from external source",
-                                            name, spec.name(), artName);
-                                } catch (Exception e) {
-                                    String s3Key = substituted.getS3() != null ? substituted.getS3().getKey() : "?";
-                                    String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
-                                    artifactError = "artifact '" + artName + "' (key='" + s3Key + "'): " + detail;
-                                    log.warn("Steps '{}': step '{}' failed to download artifact '{}' (key='{}'): {}",
-                                            name, spec.name(), artName, s3Key, detail, e);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if (artifactError != null) {
-                        if (node instanceof PodRun pod) pod.errorWith(artifactError);
+                    var artResult = resolveAndDownload(
+                            spec.artifactArgs(), localCtx, inputParams, resolvedArgs, name, spec.name());
+                    if (artResult.error() != null) {
+                        if (node instanceof PodRun pod) pod.errorWith(artResult.error());
                         groupFutures.add(CompletableFuture.completedFuture(node));
                         continue;
                     }
-                    ExecutionContext podCtx = resolvedArtifacts.isEmpty()
-                            ? localCtx : localCtx.withInputArtifacts(resolvedArtifacts);
+
+                    ExecutionContext podCtx = artResult.resolved().isEmpty()
+                            ? localCtx : localCtx.withInputArtifacts(artResult.resolved());
                     podCtx = podCtx.withRequestedOutputArtifacts(
                             neededArtifacts.getOrDefault(spec.name(), Set.of()));
 
                     log.debug("Step '{}': running args={}", spec.name(), resolvedArgs);
-                    groupFutures.add(
-                            node.executeAsync(podCtx, resolvedArgs)
-                                    .thenApply(result -> {
-                                        if (result instanceof PodRun pod) {
-                                            pod.outputResult().ifPresent(r -> {
-                                                log.debug("Step '{}': outputs.result='{}'", pod.name(), r);
-                                                localCtx.stepOutputResults.put(spec.name(), r);
-                                            });
-                                            pod.ip().ifPresent(ip -> {
-                                                log.debug("Step '{}': daemon ip='{}'", pod.name(), ip);
-                                                localCtx.stepIps.put(spec.name(), ip);
-                                            });
-                                            Map<String, Path> artifacts = pod.collectedArtifacts();
-                                            if (!artifacts.isEmpty()) {
-                                                log.debug("Step '{}': {} output artifact(s) collected",
-                                                        spec.name(), artifacts.size());
-                                                localCtx.stepArtifacts.put(spec.name(), artifacts);
-                                            }
-                                            Map<String, String> outParams = pod.collectedOutputParams();
-                                            if (!outParams.isEmpty()) {
-                                                log.debug("Step '{}': {} output parameter(s) collected",
-                                                        spec.name(), outParams.size());
-                                                localCtx.stepOutputParams.put(spec.name(), outParams);
-                                            }
-                                        } else if (result instanceof DagRun dag) {
-                                            Map<String, Path> artifacts = dag.collectedArtifacts();
-                                            if (!artifacts.isEmpty()) {
-                                                log.debug("Step '{}': {} output artifact(s) collected",
-                                                        spec.name(), artifacts.size());
-                                                localCtx.stepArtifacts.put(spec.name(), artifacts);
-                                            }
-                                        } else if (result instanceof StepsRun steps) {
-                                            Map<String, Path> artifacts = steps.collectedArtifacts();
-                                            if (!artifacts.isEmpty()) {
-                                                log.debug("Step '{}': {} output artifact(s) collected",
-                                                        spec.name(), artifacts.size());
-                                                localCtx.stepArtifacts.put(spec.name(), artifacts);
-                                            }
-                                        }
-                                        return result;
-                                    }));
+                    groupFutures.add(node.executeAsync(podCtx, resolvedArgs)
+                            .thenApply(result -> registerOutputs(result, spec.name(),
+                                    localCtx.stepIps, localCtx.stepArtifacts, localCtx.stepOutputParams,
+                                    localCtx.stepOutputResults)));
                 }
 
                 return CompletableFuture.allOf(groupFutures.toArray(new CompletableFuture[0]));
@@ -293,20 +166,14 @@ public final class StepsRun implements WorkflowNode {
                 }))
                 .thenApply(_ -> {
                     log.debug("Steps '{}': all groups completed", name);
-                    if (originalTemplate.getOutputs() != null
-                            && originalTemplate.getOutputs().getArtifacts() != null) {
-                        Map<String, Path> outputs = new LinkedHashMap<>();
-                        for (var art : originalTemplate.getOutputs().getArtifacts()) {
-                            if (art.getFrom() != null) {
-                                localCtx.resolveArtifactFrom(art.getFrom())
-                                        .ifPresent(p -> outputs.put(art.getName(), p));
-                            }
-                        }
-                        if (!outputs.isEmpty()) this.collectedArtifacts = Map.copyOf(outputs);
-                    }
+                    resolveOutputArtifacts(localCtx);
                     return (WorkflowNode) this;
                 });
     }
+
+    // -------------------------------------------------------------------------
+    // Public accessors
+    // -------------------------------------------------------------------------
 
     public WorkflowNode get(String stepName) {
         WorkflowNode node = steps.get(stepName);
@@ -314,41 +181,11 @@ public final class StepsRun implements WorkflowNode {
         return node;
     }
 
-    public Map<String, Path> collectedArtifacts() { return collectedArtifacts; }
-
     public Collection<WorkflowNode> steps() { return steps.values(); }
 
-    @Override public List<WorkflowNode> children() { return new ArrayList<>(steps.values()); }
-    @Override public int attempts() { return attempts; }
-    @Override public List<Map<String, WorkflowNode>> attemptHistory() { return List.copyOf(attemptHistory); }
-
-    @Override public String name() { return name; }
-
-    @Override public boolean succeeded() {
-        if (skipped || omitted) return false;
-        return steps.values().stream().allMatch(n -> n.succeeded() || n.skipped() || n.omitted());
-    }
-    @Override public boolean failed() {
-        if (skipped || omitted) return false;
-        return steps.values().stream().anyMatch(WorkflowNode::failed);
-    }
-    @Override public boolean errored() {
-        if (skipped || omitted) return false;
-        return steps.values().stream().anyMatch(WorkflowNode::errored);
-    }
-    @Override public boolean daemoned()  { return false; }
-    @Override public void skip()        { this.skipped = true; }
-    @Override public void omit()        { this.omitted = true; }
-    @Override public boolean skipped()  { return skipped; }
-    @Override public boolean omitted()  { return omitted; }
-    @Override public boolean running() {
-        if (skipped || omitted) return false;
-        return steps.values().stream().anyMatch(WorkflowNode::running);
-    }
-    @Override public boolean pending() {
-        if (skipped || omitted) return false;
-        return steps.values().stream().allMatch(WorkflowNode::pending);
-    }
+    // -------------------------------------------------------------------------
+    // Statics
+    // -------------------------------------------------------------------------
 
     private static Template resolveStepTemplate(WorkflowStep step, Map<String, Template> map,
                                                 String stepsName, String owningWt) {
@@ -375,23 +212,5 @@ public final class StepsRun implements WorkflowNode {
         }
         throw new IllegalArgumentException(
                 "Steps '" + stepsName + "': step '" + step.getName() + "' has neither template nor templateRef");
-    }
-
-    private static Map<String, String> parseArgs(WorkflowStep step) {
-        if (step.getArguments() == null || step.getArguments().getParameters() == null) return Map.of();
-        Map<String, String> args = new LinkedHashMap<>();
-        for (var p : step.getArguments().getParameters()) {
-            if (p.getValue() != null) args.put(p.getName(), p.getValue());
-        }
-        return Collections.unmodifiableMap(args);
-    }
-
-    private static Map<String, Artifact> parseArtifactArgs(WorkflowStep step) {
-        if (step.getArguments() == null || step.getArguments().getArtifacts() == null) return Map.of();
-        Map<String, Artifact> args = new LinkedHashMap<>();
-        for (var a : step.getArguments().getArtifacts()) {
-            args.put(a.getName(), a);
-        }
-        return Collections.unmodifiableMap(args);
     }
 }

@@ -107,37 +107,48 @@ public class ArgoKwok {
      * Applies resources from a multi-document YAML classpath file to the kwok cluster,
      * skipping any resource for which {@code filter} returns {@code false}.
      *
-     * <p>Each YAML document is parsed independently — an unparseable document is logged at
-     * WARN and skipped without aborting the rest. YAML merge keys ({@code <<:}) are resolved
-     * before handing off to the Kubernetes client, so WorkflowTemplates that use anchor-based
-     * retryStrategy defaults are stored with the correct field values.
-     *
      * @param resourcePath absolute classpath path
      * @param filter       predicate receiving the fully-parsed resource; return {@code false} to skip
      */
     public void applyYaml(String resourcePath, Predicate<HasMetadata> filter) {
-        Yaml snakeYaml = new Yaml();
         try (InputStream raw = ArgoKwok.class.getResourceAsStream(resourcePath)) {
             if (raw == null) throw new IllegalStateException("Resource not found: " + resourcePath);
-            for (Object doc : snakeYaml.loadAll(new InputStreamReader(raw, StandardCharsets.UTF_8))) {
-                if (doc == null) continue;
-                // dump() produces clean YAML with merge keys already resolved by SnakeYAML
-                byte[] docBytes = new Yaml().dump(doc).getBytes(StandardCharsets.UTF_8);
-                List<HasMetadata> items;
-                try (InputStream docIs = new ByteArrayInputStream(docBytes)) {
-                    items = k8s.load(docIs).items();
-                } catch (Exception e) {
-                    log.warn("Skipping unparseable document in {}: {}", resourcePath, e.getMessage());
-                    continue;
-                }
-                for (HasMetadata item : items) {
-                    if (filter.test(item)) applyItem(item);
-                }
-            }
+            applyYaml(raw, filter);
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
             throw new RuntimeException("Failed to apply " + resourcePath, e);
+        }
+    }
+
+    /**
+     * Applies resources from a multi-document YAML stream to the kwok cluster,
+     * skipping any resource for which {@code filter} returns {@code false}.
+     *
+     * <p>The stream is consumed once; the caller is responsible for closing it.
+     * Each YAML document is parsed independently — an unparseable document is logged at
+     * WARN and skipped without aborting the rest. YAML merge keys ({@code <<:}) are resolved
+     * before handing off to the Kubernetes client.
+     *
+     * @param content YAML input stream (multi-document, UTF-8)
+     * @param filter  predicate receiving the fully-parsed resource; return {@code false} to skip
+     */
+    public void applyYaml(InputStream content, Predicate<HasMetadata> filter) {
+        Yaml snakeYaml = new Yaml();
+        for (Object doc : snakeYaml.loadAll(new InputStreamReader(content, StandardCharsets.UTF_8))) {
+            if (doc == null) continue;
+            // dump() produces clean YAML with merge keys already resolved by SnakeYAML
+            byte[] docBytes = new Yaml().dump(doc).getBytes(StandardCharsets.UTF_8);
+            List<HasMetadata> items;
+            try (InputStream docIs = new ByteArrayInputStream(docBytes)) {
+                items = k8s.load(docIs).items();
+            } catch (Exception e) {
+                log.warn("Skipping unparseable document: {}", e.getMessage());
+                continue;
+            }
+            for (HasMetadata item : items) {
+                if (filter.test(item)) applyItem(item);
+            }
         }
     }
 

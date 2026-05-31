@@ -488,7 +488,7 @@ public final class PodRun implements WorkflowNode {
                                     ? StartupCheckStrategy.StartupStatus.NOT_YET_KNOWN
                                     : StartupCheckStrategy.StartupStatus.SUCCESSFUL;
                         }
-                    }.withTimeout(Duration.ofMinutes(10)))
+                    }.withTimeout(Duration.ofDays(1_000))) // practically infinite
                     .waitingFor(new AbstractWaitStrategy() {
                         @Override protected void waitUntilReady() {}
                     });

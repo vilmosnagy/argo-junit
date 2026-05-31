@@ -292,10 +292,11 @@ public final class PodRun implements WorkflowNode {
         Map<String, Path> effectiveInputs = new LinkedHashMap<>(ctx.inputArtifacts);
         for (ArtifactSpec decl : inputArtifactDecls) {
             if (decl.artifact() != null) {
-                Optional<ArtifactDriver> maybeDriver = ctx.findDriver(decl.artifact());
+                Artifact substituted = ExecutionContext.substituteArtifact(decl.artifact(), ctx, inputParams);
+                Optional<ArtifactDriver> maybeDriver = ctx.findDriver(substituted);
                 if (maybeDriver.isPresent()) {
                     Path downloaded = maybeDriver.get().download(
-                            decl.artifact(), ctx.tmpDir, ctx.k8sClient, ctx.namespace);
+                            substituted, ctx.tmpDir, ctx.k8sClient, ctx.namespace);
                     effectiveInputs.put(decl.name(), downloaded);
                     log.debug("Pod '{}': downloaded external input artifact '{}' → '{}'",
                             name, decl.name(), downloaded);

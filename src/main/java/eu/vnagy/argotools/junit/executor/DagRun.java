@@ -2,6 +2,7 @@ package eu.vnagy.argotools.junit.executor;
 
 import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.DAGTask;
+import eu.vnagy.argotools.junit.model.Parameter;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import org.slf4j.Logger;
@@ -207,6 +208,14 @@ public final class DagRun implements WorkflowNode {
 
                 Map<String, String> resolvedArgs = new LinkedHashMap<>();
                 spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
+                Template target = spec.taskTemplate();
+                if (target != null && target.getInputs() != null && target.getInputs().getParameters() != null) {
+                    for (Parameter p : target.getInputs().getParameters()) {
+                        if (!resolvedArgs.containsKey(p.getName()) && p.getValue() != null) {
+                            resolvedArgs.put(p.getName(), localCtx.substitute(p.getValue(), inputParams));
+                        }
+                    }
+                }
 
                 if (spec.when() != null && !spec.when().isBlank()) {
                     Map<String, String> whenParams = new LinkedHashMap<>(inputParams);

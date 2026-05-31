@@ -1,6 +1,7 @@
 package eu.vnagy.argotools.junit.executor;
 
 import eu.vnagy.argotools.junit.model.Artifact;
+import eu.vnagy.argotools.junit.model.Parameter;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import eu.vnagy.argotools.junit.model.WorkflowStep;
@@ -187,6 +188,14 @@ public final class StepsRun implements WorkflowNode {
 
                     Map<String, String> resolvedArgs = new LinkedHashMap<>();
                     spec.args().forEach((k, v) -> resolvedArgs.put(k, localCtx.substitute(v, inputParams)));
+                    Template target = spec.stepTemplate();
+                    if (target != null && target.getInputs() != null && target.getInputs().getParameters() != null) {
+                        for (Parameter p : target.getInputs().getParameters()) {
+                            if (!resolvedArgs.containsKey(p.getName()) && p.getValue() != null) {
+                                resolvedArgs.put(p.getName(), localCtx.substitute(p.getValue(), inputParams));
+                            }
+                        }
+                    }
 
                     Map<String, Path> resolvedArtifacts = new LinkedHashMap<>();
                     String artifactError = null;

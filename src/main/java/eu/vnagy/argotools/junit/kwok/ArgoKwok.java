@@ -172,7 +172,7 @@ public class ArgoKwok {
                         .inNamespace(ns != null ? ns : "default")
                         .resource(gkr).createOrReplace();
             } else {
-                k8s.resource(item).createOrReplace();
+                k8s.resource(item).inNamespace(ns != null ? ns : "default").createOrReplace();
             }
         } catch (Exception e) {
             log.debug("Skipping {}/{}: {}", kind, name, e.getMessage());

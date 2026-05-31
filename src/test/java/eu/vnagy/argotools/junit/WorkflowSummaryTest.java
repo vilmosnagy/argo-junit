@@ -396,10 +396,10 @@ class WorkflowSummaryTest {
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
-                    
+
                     STEP          DURATION  MESSAGE
                      ✗ main                 error
-                     └─✗ consume  {duration}  artifact 'data-file' (key='data/does-not-exist.txt'): The specified key does not exist. {s3-sdk}
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/does-not-exist.txt'): S3 download failed — bucket=summary-errored-artifact-test key=data/does-not-exist.txt artifact=data-file: The specified key does not exist. {s3-sdk}
                     """));
         }
 
@@ -454,10 +454,10 @@ class WorkflowSummaryTest {
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
-                    
+
                     STEP          DURATION  MESSAGE
                      ✗ main                 error
-                     └─✗ consume  {duration}  artifact 'data-file' (key='data/does-not-exist.txt'): The specified key does not exist. {s3-sdk}
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/does-not-exist.txt'): S3 download failed — bucket=summary-errored-artifact-test key=data/does-not-exist.txt artifact=data-file: The specified key does not exist. {s3-sdk}
                     """));
         }
 
@@ -633,7 +633,7 @@ class WorkflowSummaryTest {
 
                     STEP          DURATION  MESSAGE
                      ✗ main                 error
-                     └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): The Access Key Id you provided does not exist in our records. {s3-sdk}
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): S3 download failed — bucket=summary-errored-artifact-test key=data/hello.txt artifact=data-file: The Access Key Id you provided does not exist in our records. {s3-sdk}
                     """));
         }
 
@@ -691,7 +691,7 @@ class WorkflowSummaryTest {
 
                     STEP          DURATION  MESSAGE
                      ✗ main                 error
-                     └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): The Access Key Id you provided does not exist in our records. {s3-sdk}
+                     └─✗ consume  {duration}  artifact 'data-file' (key='data/hello.txt'): S3 download failed — bucket=summary-errored-artifact-test key=data/hello.txt artifact=data-file: The Access Key Id you provided does not exist in our records. {s3-sdk}
                     """));
         }
 

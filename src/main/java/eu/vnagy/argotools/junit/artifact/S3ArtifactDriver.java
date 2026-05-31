@@ -53,10 +53,19 @@ public class S3ArtifactDriver implements ArtifactDriver {
             throws Exception {
         S3Artifact s3 = artifact.getS3();
         try (S3Client client = buildClient(s3, k8sClient, namespace)) {
-            byte[] content = client.getObjectAsBytes(GetObjectRequest.builder()
-                    .bucket(s3.getBucket())
-                    .key(s3.getKey())
-                    .build()).asByteArray();
+            byte[] content;
+            try {
+                content = client.getObjectAsBytes(GetObjectRequest.builder()
+                        .bucket(s3.getBucket())
+                        .key(s3.getKey())
+                        .build()).asByteArray();
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                        "S3 download failed — bucket=" + s3.getBucket()
+                        + " key=" + s3.getKey()
+                        + " artifact=" + artifact.getName()
+                        + ": " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()), e);
+            }
 
             if (noArchive(artifact)) {
                 Path dest = Files.createTempFile(tempDir, "s3-in-", "");
@@ -80,10 +89,19 @@ public class S3ArtifactDriver implements ArtifactDriver {
         S3Artifact s3 = artifact.getS3();
         byte[] content = noArchive(artifact) ? Files.readAllBytes(source) : createTarGz(source);
         try (S3Client client = buildClient(s3, k8sClient, namespace)) {
-            client.putObject(PutObjectRequest.builder()
-                    .bucket(s3.getBucket())
-                    .key(s3.getKey())
-                    .build(), RequestBody.fromBytes(content));
+            try {
+                client.putObject(PutObjectRequest.builder()
+                        .bucket(s3.getBucket())
+                        .key(s3.getKey())
+                        .build(), RequestBody.fromBytes(content));
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                        "S3 upload failed — bucket=" + s3.getBucket()
+                        + " key=" + s3.getKey()
+                        + " artifact=" + artifact.getName()
+                        + " source=" + source
+                        + ": " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()), e);
+            }
         }
     }
 

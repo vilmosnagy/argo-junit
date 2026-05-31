@@ -18,7 +18,9 @@ record ResolvedRetry(int limit, RetryPolicy policy,
     static ResolvedRetry from(RetryStrategy templateRs, RetryStrategy defaultRs) {
         RetryStrategy rs = templateRs != null ? templateRs : defaultRs;
         if (rs == null) return NONE;
-        int limit = rs.getLimit() != null ? Integer.parseInt(rs.getLimit()) : -1;
+        String limitStr = rs.getLimit() != null ? rs.getLimit()
+                : (defaultRs != null ? defaultRs.getLimit() : null);
+        int limit = limitStr != null ? Integer.parseInt(limitStr) : -1;
         String pol = rs.getRetryPolicy();
         RetryPolicy policy = "Always".equalsIgnoreCase(pol) ? RetryPolicy.ALWAYS
                 : "OnError".equalsIgnoreCase(pol) ? RetryPolicy.ON_ERROR

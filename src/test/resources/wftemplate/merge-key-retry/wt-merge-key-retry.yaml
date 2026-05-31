@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wt-merge-key-retry
+spec:
+  templates:
+  - name: not-used
+    retryStrategy: &retry-defaults
+      limit: "2"
+    container:
+      image: busybox
+      command: [ sh, -c ]
+      args: [ "exit 1" ]
+  - name: always-fail
+    retryStrategy:
+      <<: *retry-defaults
+      retryPolicy: Always
+      # limit comes entirely from the anchor — after round-tripping through kwok the
+      # merge key is not resolved, leaving retryStrategy non-null but limit=null
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["exit 1"]

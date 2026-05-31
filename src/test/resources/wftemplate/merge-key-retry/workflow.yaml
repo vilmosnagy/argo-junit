@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: merge-key-retry-
+spec:
+  entrypoint: main
+  # templateDefaults limit should act as a safety net when the template's own
+  # limit is lost due to an unresolved merge-key anchor in the WorkflowTemplate
+  templateDefaults:
+    retryStrategy:
+      limit: "2"
+  templates:
+  - name: main
+    dag:
+      tasks:
+      - name: run
+        templateRef:
+          name: wt-merge-key-retry
+          template: always-fail

@@ -2,11 +2,19 @@ package eu.vnagy.argotools.junit.kwok;
 
 import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
+import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.dsl.base.ResourceDefinitionContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.yaml.snakeyaml.Yaml;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.function.Predicate;
 
 /**
  * Test-infrastructure wrapper around {@link KwokContainer} that also installs the Argo
@@ -87,38 +95,45 @@ public class ArgoKwok {
     }
 
     /**
-     * Applies a multi-document YAML file from the classpath to the kwok cluster.
-     * Resources that fail to apply (e.g. namespaced resources for a namespace that doesn't
-     * exist yet) are logged at DEBUG and silently skipped.
+     * Applies all resources from a multi-document YAML classpath file to the kwok cluster.
      *
      * @param resourcePath absolute classpath path (e.g. {@code "/examples/workflow-template/templates.yaml"})
      */
     public void applyYaml(String resourcePath) {
-        try (InputStream is = ArgoKwok.class.getResourceAsStream(resourcePath)) {
-            if (is == null) throw new IllegalStateException("Resource not found: " + resourcePath);
-            k8s.load(is).items().forEach(item -> {
-                String kind = item.getKind();
-                String name = item.getMetadata().getName();
-                String ns = item.getMetadata().getNamespace();
-                try {
-                    if (item instanceof GenericKubernetesResource gkr) {
-                        String apiVersion = gkr.getApiVersion();
-                        int slash = apiVersion.indexOf('/');
-                        String group = slash >= 0 ? apiVersion.substring(0, slash) : "";
-                        String version = slash >= 0 ? apiVersion.substring(slash + 1) : apiVersion;
-                        var ctx = new io.fabric8.kubernetes.client.dsl.base.ResourceDefinitionContext.Builder()
-                                .withGroup(group).withVersion(version).withKind(kind)
-                                .withNamespaced(true).build();
-                        k8s.genericKubernetesResources(ctx)
-                                .inNamespace(ns != null ? ns : "default")
-                                .resource(gkr).createOrReplace();
-                    } else {
-                        k8s.resource(item).createOrReplace();
-                    }
+        applyYaml(resourcePath, _ -> true);
+    }
+
+    /**
+     * Applies resources from a multi-document YAML classpath file to the kwok cluster,
+     * skipping any resource for which {@code filter} returns {@code false}.
+     *
+     * <p>Each YAML document is parsed independently — an unparseable document is logged at
+     * WARN and skipped without aborting the rest. YAML merge keys ({@code <<:}) are resolved
+     * before handing off to the Kubernetes client, so WorkflowTemplates that use anchor-based
+     * retryStrategy defaults are stored with the correct field values.
+     *
+     * @param resourcePath absolute classpath path
+     * @param filter       predicate receiving the fully-parsed resource; return {@code false} to skip
+     */
+    public void applyYaml(String resourcePath, Predicate<HasMetadata> filter) {
+        Yaml snakeYaml = new Yaml();
+        try (InputStream raw = ArgoKwok.class.getResourceAsStream(resourcePath)) {
+            if (raw == null) throw new IllegalStateException("Resource not found: " + resourcePath);
+            for (Object doc : snakeYaml.loadAll(new InputStreamReader(raw, StandardCharsets.UTF_8))) {
+                if (doc == null) continue;
+                // dump() produces clean YAML with merge keys already resolved by SnakeYAML
+                byte[] docBytes = new Yaml().dump(doc).getBytes(StandardCharsets.UTF_8);
+                List<HasMetadata> items;
+                try (InputStream docIs = new ByteArrayInputStream(docBytes)) {
+                    items = k8s.load(docIs).items();
                 } catch (Exception e) {
-                    log.debug("Skipping {}/{}: {}", kind, name, e.getMessage());
+                    log.warn("Skipping unparseable document in {}: {}", resourcePath, e.getMessage());
+                    continue;
                 }
-            });
+                for (HasMetadata item : items) {
+                    if (filter.test(item)) applyItem(item);
+                }
+            }
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
@@ -129,6 +144,29 @@ public class ArgoKwok {
     // -------------------------------------------------------------------------
     // Internals
     // -------------------------------------------------------------------------
+
+    private void applyItem(HasMetadata item) {
+        String kind = item.getKind();
+        String name = item.getMetadata().getName();
+        String ns   = item.getMetadata().getNamespace();
+        try {
+            if (item instanceof GenericKubernetesResource gkr) {
+                String apiVersion = gkr.getApiVersion();
+                int slash = apiVersion.indexOf('/');
+                String group   = slash >= 0 ? apiVersion.substring(0, slash) : "";
+                String version = slash >= 0 ? apiVersion.substring(slash + 1) : apiVersion;
+                k8s.genericKubernetesResources(new ResourceDefinitionContext.Builder()
+                                .withGroup(group).withVersion(version).withKind(kind)
+                                .withNamespaced(true).build())
+                        .inNamespace(ns != null ? ns : "default")
+                        .resource(gkr).createOrReplace();
+            } else {
+                k8s.resource(item).createOrReplace();
+            }
+        } catch (Exception e) {
+            log.debug("Skipping {}/{}: {}", kind, name, e.getMessage());
+        }
+    }
 
     private void waitForWorkflowTemplateCrd() {
         // Phase 1: CRD object in etcd

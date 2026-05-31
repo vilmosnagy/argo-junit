@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wt-alpha
+spec:
+  templates:
+  - name: run
+    container:
+      image: busybox
+      command: [echo]
+      args: ["alpha"]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: wt-beta
+spec:
+  templates:
+  - name: run
+    container:
+      image: busybox
+      command: [echo]
+      args: ["beta"]

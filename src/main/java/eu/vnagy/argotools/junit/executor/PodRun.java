@@ -330,8 +330,12 @@ public final class PodRun implements WorkflowNode {
         }
 
         // Collect output artifacts from the final run
+        final Map<String, String> finalInputParams = inputParams;
         if (!daemon && this.container != null) {
             Set<String> requested = ctx.requestedOutputArtifacts;
+            log.debug("Pod '{}': output artifact collection — specs={} requested={}",
+                    name, outputArtifactSpecs.size(),
+                    requested == null ? "null(all)" : requested.isEmpty() ? "empty" : requested);
             // Always collect artifacts that have an external location (S3 etc.) regardless of
             // whether a downstream step requested them — they need to be uploaded unconditionally.
             List<ArtifactSpec> specsToCollect;
@@ -339,8 +343,21 @@ public final class PodRun implements WorkflowNode {
                 specsToCollect = outputArtifactSpecs;
             } else {
                 specsToCollect = outputArtifactSpecs.stream()
-                        .filter(s -> requested.contains(s.name())
-                                  || (s.artifact() != null && ctx.findDriver(s.artifact()).isPresent()))
+                        .filter(s -> {
+                            if (requested.contains(s.name())) {
+                                log.debug("Pod '{}': artifact '{}' included — downstream requested it", name, s.name());
+                                return true;
+                            }
+                            if (s.artifact() == null) {
+                                log.debug("Pod '{}': artifact '{}' skipped — no storage spec, not requested", name, s.name());
+                                return false;
+                            }
+                            Artifact sub = ExecutionContext.substituteArtifact(s.artifact(), ctx, finalInputParams);
+                            boolean hasDriver = ctx.findDriver(sub).isPresent();
+                            log.debug("Pod '{}': artifact '{}' {} — has external storage driver: {}",
+                                    name, s.name(), hasDriver ? "included" : "skipped", hasDriver);
+                            return hasDriver;
+                        })
                         .toList();
             }
             if (!specsToCollect.isEmpty()) {
@@ -352,11 +369,18 @@ public final class PodRun implements WorkflowNode {
                         log.debug("Pod '{}': collected output artifact '{}' from '{}' → '{}'",
                                 name, spec.name(), spec.path(), extracted);
                         if (spec.artifact() != null) {
-                            Optional<ArtifactDriver> maybeDriver = ctx.findDriver(spec.artifact());
+                            Artifact substituted = ExecutionContext.substituteArtifact(
+                                    spec.artifact(), ctx, finalInputParams);
+                            Optional<ArtifactDriver> maybeDriver = ctx.findDriver(substituted);
                             if (maybeDriver.isPresent()) {
+                                log.debug("Pod '{}': uploading output artifact '{}' via {}",
+                                        name, spec.name(), maybeDriver.get().getClass().getSimpleName());
                                 maybeDriver.get().upload(
-                                        spec.artifact(), extracted, ctx.k8sClient, ctx.namespace);
+                                        substituted, extracted, ctx.k8sClient, ctx.namespace);
                                 log.debug("Pod '{}': uploaded output artifact '{}' to external storage",
+                                        name, spec.name());
+                            } else {
+                                log.debug("Pod '{}': no driver for output artifact '{}', skipping upload",
                                         name, spec.name());
                             }
                         }

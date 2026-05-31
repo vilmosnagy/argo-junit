@@ -20,6 +20,9 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -43,6 +46,8 @@ import java.util.stream.Stream;
  */
 public class S3ArtifactDriver implements ArtifactDriver {
 
+    private static final Logger log = LoggerFactory.getLogger(S3ArtifactDriver.class);
+
     @Override
     public boolean supports(Artifact artifact) {
         return artifact.getS3() != null;
@@ -52,6 +57,7 @@ public class S3ArtifactDriver implements ArtifactDriver {
     public Path download(Artifact artifact, Path tempDir, KubernetesClient k8sClient, String namespace)
             throws Exception {
         S3Artifact s3 = artifact.getS3();
+        log.debug("S3 download: artifact={} bucket={} key={}", artifact.getName(), s3.getBucket(), s3.getKey());
         try (S3Client client = buildClient(s3, k8sClient, namespace)) {
             byte[] content;
             try {
@@ -87,6 +93,7 @@ public class S3ArtifactDriver implements ArtifactDriver {
     public void upload(Artifact artifact, Path source, KubernetesClient k8sClient, String namespace)
             throws Exception {
         S3Artifact s3 = artifact.getS3();
+        log.debug("S3 upload: artifact={} bucket={} key={} source={}", artifact.getName(), s3.getBucket(), s3.getKey(), source);
         byte[] content = noArchive(artifact) ? Files.readAllBytes(source) : createTarGz(source);
         try (S3Client client = buildClient(s3, k8sClient, namespace)) {
             try {

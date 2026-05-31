@@ -31,26 +31,26 @@ final class ExecutionContext {
     private static final Logger log = LoggerFactory.getLogger(ExecutionContext.class);
 
     private static final Pattern STEP_OUTPUT_RESULT =
-            Pattern.compile("\\{\\{steps\\.([^.}]+)\\.outputs\\.result\\}\\}");
+            Pattern.compile("\\{\\{\\s*steps\\.([^.}]+)\\.outputs\\.result\\s*\\}\\}");
     private static final Pattern STEP_IP =
-            Pattern.compile("\\{\\{steps\\.([^.}]+)\\.ip\\}\\}");
+            Pattern.compile("\\{\\{\\s*steps\\.([^.}]+)\\.ip\\s*\\}\\}");
     private static final Pattern TASK_IP =
-            Pattern.compile("\\{\\{tasks\\.([^.}]+)\\.ip\\}\\}");
+            Pattern.compile("\\{\\{\\s*tasks\\.([^.}]+)\\.ip\\s*\\}\\}");
     private static final Pattern STEP_OUTPUT_PARAM =
-            Pattern.compile("\\{\\{steps\\.([^.}]+)\\.outputs\\.parameters\\.([^}]+)\\}\\}");
+            Pattern.compile("\\{\\{\\s*steps\\.([^.}]+)\\.outputs\\.parameters\\.([^}]+?)\\s*\\}\\}");
     private static final Pattern TASK_OUTPUT_PARAM =
-            Pattern.compile("\\{\\{tasks\\.([^.}]+)\\.outputs\\.parameters\\.([^}]+)\\}\\}");
+            Pattern.compile("\\{\\{\\s*tasks\\.([^.}]+)\\.outputs\\.parameters\\.([^}]+?)\\s*\\}\\}");
     private static final Pattern INPUTS_PARAMETER =
-            Pattern.compile("\\{\\{inputs\\.parameters\\.([^}]+)\\}\\}");
+            Pattern.compile("\\{\\{\\s*inputs\\.parameters\\.([^}]+?)\\s*\\}\\}");
     private static final Pattern WORKFLOW_PARAMETER =
-            Pattern.compile("\\{\\{workflow\\.parameters\\.([^}]+)\\}\\}");
+            Pattern.compile("\\{\\{\\s*workflow\\.parameters\\.([^}]+?)\\s*\\}\\}");
     // package-private so StepsRun/DagRun can parse from: expressions at plan time
     static final Pattern STEP_ARTIFACT_FROM =
-            Pattern.compile("\\{\\{steps\\.([^.}]+)\\.outputs\\.artifacts\\.([^}]+)\\}\\}");
+            Pattern.compile("\\{\\{\\s*steps\\.([^.}]+)\\.outputs\\.artifacts\\.([^}]+?)\\s*\\}\\}");
     static final Pattern TASK_ARTIFACT_FROM =
-            Pattern.compile("\\{\\{tasks\\.([^.}]+)\\.outputs\\.artifacts\\.([^}]+)\\}\\}");
+            Pattern.compile("\\{\\{\\s*tasks\\.([^.}]+)\\.outputs\\.artifacts\\.([^}]+?)\\s*\\}\\}");
     private static final Pattern INPUTS_ARTIFACT_FROM =
-            Pattern.compile("\\{\\{inputs\\.artifacts\\.([^}]+)\\}\\}");
+            Pattern.compile("\\{\\{\\s*inputs\\.artifacts\\.([^}]+?)\\s*\\}\\}");
 
     final Map<String, Template> templateMap;
     final Map<String, String> workflowParams;

@@ -67,6 +67,7 @@ public final class PodRun implements WorkflowNode {
     // Plan fields — parsed from template at construction time
     private final String image;
     private final List<String> command;
+    private final List<String> containerArgs;
     private final String scriptSource;
     private final boolean daemon;
     private final IoK8sApiCoreV1Probe readinessProbe;
@@ -106,16 +107,15 @@ public final class PodRun implements WorkflowNode {
             // /tmp/script is passed as CMD in runAttempt
             this.command = script.getCommand() != null
                     ? List.copyOf(script.getCommand()) : List.of();
+            this.containerArgs = List.of();
             this.scriptSource = script.getSource();
             this.daemon = false;
             this.readinessProbe = null;
         } else {
             var cont = template.getContainer();
-            List<String> cmd = cont.getCommand() != null
-                    ? new ArrayList<>(cont.getCommand()) : new ArrayList<>();
-            if (cont.getArgs() != null) cmd.addAll(cont.getArgs());
             this.image = cont.getImage();
-            this.command = List.copyOf(cmd);
+            this.command = cont.getCommand() != null ? List.copyOf(cont.getCommand()) : List.of();
+            this.containerArgs = cont.getArgs() != null ? List.copyOf(cont.getArgs()) : List.of();
             this.scriptSource = null;
             this.daemon = Boolean.TRUE.equals(template.getDaemon());
             this.readinessProbe = this.daemon ? cont.getReadinessProbe() : null;
@@ -264,13 +264,15 @@ public final class PodRun implements WorkflowNode {
 
         String resolvedImage = ctx.substitute(image, inputParams);
         List<String> resolvedCommand = ctx.substituteAll(command, inputParams);
+        List<String> resolvedContainerArgs = ctx.substituteAll(containerArgs, inputParams);
         String resolvedScript = scriptSource != null ? ctx.substitute(scriptSource, inputParams) : null;
 
         if (resolvedScript != null) {
             log.debug("Pod '{}': starting image='{}' entrypoint={} script=/tmp/script",
                     name, resolvedImage, resolvedCommand);
         } else {
-            log.debug("Pod '{}': starting image='{}' command={}", name, resolvedImage, resolvedCommand);
+            log.debug("Pod '{}': starting image='{}' command={} args={}",
+                    name, resolvedImage, resolvedCommand, resolvedContainerArgs);
         }
 
         // Resolve env vars before the retry loop
@@ -312,7 +314,7 @@ public final class PodRun implements WorkflowNode {
 
         while (true) {
             this.attempts++;
-            runAttempt(ctx, resolvedImage, resolvedCommand, resolvedScript, effectiveInputs, resolvedEnv, materializedVolumes);
+            runAttempt(ctx, resolvedImage, resolvedCommand, resolvedContainerArgs, resolvedScript, effectiveInputs, resolvedEnv, materializedVolumes);
 
             if (!retry.shouldRetry(status == Status.FAILED, status == Status.ERRORED, this.attempts)) break;
             if (!retry.withinMaxDuration(retryStart)) {
@@ -418,7 +420,8 @@ public final class PodRun implements WorkflowNode {
     }
 
     private void runAttempt(ExecutionContext ctx, String resolvedImage,
-                            List<String> resolvedCommand, String resolvedScript,
+                            List<String> resolvedCommand, List<String> resolvedContainerArgs,
+                            String resolvedScript,
                             Map<String, Path> effectiveInputs,
                             Map<String, String> resolvedEnv,
                             Map<String, Path> materializedVolumes) throws Exception {
@@ -433,8 +436,15 @@ public final class PodRun implements WorkflowNode {
             }
             cont.withCommand("/tmp/script");
         } else {
+            // Container template: Kubernetes semantics — command overrides ENTRYPOINT, args overrides CMD
             if (!resolvedCommand.isEmpty()) {
-                cont.withCommand(resolvedCommand.toArray(String[]::new));
+                cont.withCreateContainerCmdModifier(
+                        cmd -> cmd.withEntrypoint(resolvedCommand.toArray(String[]::new)));
+            }
+            if (!resolvedContainerArgs.isEmpty()) {
+                cont.withCommand(resolvedContainerArgs.toArray(String[]::new));
+            } else if (!resolvedCommand.isEmpty()) {
+                cont.withCommand();  // command with no args: clear the image's default CMD
             }
         }
 

@@ -43,11 +43,13 @@ ArgoWorkflowExecutor (Java)
 | `container` templates | ✓ | Full support |
 | `script` templates | ✓ | stdout → `outputs.result` |
 | `steps` templates | ✓ | Sequential groups, parallel within group |
-| `dag` templates | ✓ | Dependency-based execution with `depends:` expressions |
+| `dag` templates | ✓ | Dependency-based execution with `depends:` expressions and `dependencies:` lists |
 | `daemon` templates | ✓ | Container left running; IP exposed to downstream steps; stopped after its scope completes; HTTP and exec `readinessProbe` supported |
 | `inputs.parameters` / `outputs.parameters` | ✓ | Full parameter passing |
 | `outputs.result` | ✓ | Script stdout capture |
 | `outputs.parameters[].valueFrom.path` | ✓ | File content read from container after exit |
+| `outputs.parameters[].valueFrom.expression` | ✓ | DAG/steps output parameter selected via JEXL3 expression; can reference `inputs.parameters` and `tasks[*].outputs.parameters` |
+| `outputs.artifacts[].fromExpression` | ✓ | DAG/steps output artifact selected via JEXL3 expression; can reference `tasks[*].outputs.artifacts` |
 | `inputs.parameters[].valueFrom.configMapKeyRef` | ✓ | Template-level parameter from ConfigMap |
 | `when` conditionals | ✓ | Evaluated after expression substitution |
 | `retryStrategy` | ✓ | `limit`, `retryPolicy` (OnFailure / OnError / Always), exponential backoff with `factor`, `cap`, `maxDuration` |
@@ -289,7 +291,7 @@ Two responsibilities split across two layers:
 
 Applied to: image, command, args, script source, `when` fields, and ConfigMap/Secret resource name and key references.
 
-**Expression evaluation** (`ExpressionEngine`) — Apache JEXL3-based evaluator in the `expression/` package. After `{{...}}` substitution, `when` fields become plain JEXL-compatible expressions (e.g. `"heads" == "heads"`, `"a" != "b"`, `true`). `ExpressionEngine.evaluateWhen()` evaluates these using an empty JEXL context. Future methods on `ExpressionEngine` will cover `valueFrom.expression` and `fromExpression` with a richer evaluation context (input parameters, task output parameters, task output artifacts). No custom parser.
+**Expression evaluation** (`ExpressionEngine`) — Apache JEXL3-based evaluator in the `expression/` package. After `{{...}}` substitution, `when` fields become plain JEXL-compatible expressions (e.g. `"heads" == "heads"`, `"a" != "b"`, `true`). `ExpressionEngine.evaluateWhen()` evaluates these using an empty JEXL context. `ExpressionEngine.evaluateOutputParamExpression()` and `evaluateOutputArtifactExpression()` evaluate DAG/steps output expressions using a richer context that exposes `inputs.parameters` and `tasks[*].outputs.parameters` / `tasks[*].outputs.artifacts`. No custom parser.
 
 Artifact references (`{{steps.X.outputs.artifacts.foo}}`) are not substituted as strings — the executor resolves them as artifact handles on a separate code path: `DagRun`/`StepsRun` parse `from:` expressions at plan time to determine which upstream artifacts to collect, and pass the resolved host paths to downstream pods via `inputArtifacts`.
 
@@ -387,7 +389,7 @@ argo-junit/
 │   │   ├── model/                      ← generated POJOs
 │   │   ├── artifact/                   ← ArtifactDriver interface + S3 impl
 │   │   ├── executor/                   ← execution engine, Testcontainer lifecycle
-│   │   ├── expression/                 ← ExpressionEngine (JEXL3); when: evaluation, future valueFrom.expression
+│   │   ├── expression/                 ← ExpressionEngine (JEXL3); when: evaluation, valueFrom.expression, fromExpression
 │   │   ├── util/                       ← WorkflowSummary and other utilities
 │   │   └── kwok/                       ← KwokContainer, ArgoKwok
 │   └── test/

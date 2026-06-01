@@ -278,9 +278,9 @@ POJOs generated from the Argo Workflows OpenAPI spec (`argo-workflows/api/openap
 
 ### Expression Engine (`expression/`)
 
-Two responsibilities, currently implemented inline in the executor:
+Two responsibilities split across two layers:
 
-**Template substitution** — regex-based replacement of `{{...}}` placeholders. Patterns resolved in order:
+**Template substitution** (`ExecutionContext.substitute()`) — regex-based replacement of `{{...}}` placeholders. Patterns resolved in order:
 - `{{steps.<n>.outputs.result}}` — output result of a preceding step
 - `{{steps.<n>.ip}}` / `{{tasks.<n>.ip}}` — IP address of a daemon pod
 - `{{steps.<n>.outputs.parameters.<name>}}` / `{{tasks.<n>.outputs.parameters.<name>}}` — file-backed output parameter
@@ -289,7 +289,7 @@ Two responsibilities, currently implemented inline in the executor:
 
 Applied to: image, command, args, script source, `when` fields, and ConfigMap/Secret resource name and key references.
 
-**`when` evaluation** — after substitution, `when` fields are plain comparison strings (e.g. `"heads == heads"`). Currently evaluated with simple string splitting on ` == ` and ` != `; boolean literals also accepted. Full expression support planned via Apache JEXL or SpEL. No custom parser.
+**Expression evaluation** (`ExpressionEngine`) — Apache JEXL3-based evaluator in the `expression/` package. After `{{...}}` substitution, `when` fields become plain JEXL-compatible expressions (e.g. `"heads" == "heads"`, `"a" != "b"`, `true`). `ExpressionEngine.evaluateWhen()` evaluates these using an empty JEXL context. Future methods on `ExpressionEngine` will cover `valueFrom.expression` and `fromExpression` with a richer evaluation context (input parameters, task output parameters, task output artifacts). No custom parser.
 
 Artifact references (`{{steps.X.outputs.artifacts.foo}}`) are not substituted as strings — the executor resolves them as artifact handles on a separate code path: `DagRun`/`StepsRun` parse `from:` expressions at plan time to determine which upstream artifacts to collect, and pass the resolved host paths to downstream pods via `inputArtifacts`.
 
@@ -387,6 +387,7 @@ argo-junit/
 │   │   ├── model/                      ← generated POJOs
 │   │   ├── artifact/                   ← ArtifactDriver interface + S3 impl
 │   │   ├── executor/                   ← execution engine, Testcontainer lifecycle
+│   │   ├── expression/                 ← ExpressionEngine (JEXL3); when: evaluation, future valueFrom.expression
 │   │   ├── util/                       ← WorkflowSummary and other utilities
 │   │   └── kwok/                       ← KwokContainer, ArgoKwok
 │   └── test/

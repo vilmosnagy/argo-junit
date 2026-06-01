@@ -12,6 +12,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.Network;
 
+import eu.vnagy.argotools.junit.expression.ExpressionEngine;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -281,16 +283,7 @@ final class ExecutionContext {
     }
 
     boolean evaluateWhen(String condition) {
-        condition = condition.trim();
-        if (condition.contains(" == ")) {
-            String[] parts = condition.split(" == ", 2);
-            return parts[0].trim().equals(parts[1].trim());
-        }
-        if (condition.contains(" != ")) {
-            String[] parts = condition.split(" != ", 2);
-            return !parts[0].trim().equals(parts[1].trim());
-        }
-        return Boolean.parseBoolean(condition);
+        return ExpressionEngine.evaluateWhen(condition);
     }
 
     private String applyPattern(String expr, Pattern pattern, Map<String, String> values) {

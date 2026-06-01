@@ -1,5 +1,6 @@
 package eu.vnagy.argotools.junit.executor;
 
+import eu.vnagy.argotools.junit.expression.ExpressionEngine;
 import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.Arguments;
 import eu.vnagy.argotools.junit.model.Parameter;
@@ -35,6 +36,7 @@ abstract class BaseCompositeRun {
     protected volatile int attempts;
     protected final List<Map<String, WorkflowNode>> attemptHistory = new CopyOnWriteArrayList<>();
     protected volatile Map<String, Path> collectedArtifacts = Map.of();
+    protected volatile Map<String, String> collectedOutputParams = Map.of();
     protected volatile boolean skipped;
     protected volatile boolean omitted;
 
@@ -73,6 +75,7 @@ abstract class BaseCompositeRun {
     public List<Map<String, WorkflowNode>> attemptHistory() { return List.copyOf(attemptHistory); }
     public List<WorkflowNode> children() { return new ArrayList<>(currentNodes().values()); }
     public Map<String, Path> collectedArtifacts() { return collectedArtifacts; }
+    public Map<String, String> collectedOutputParams() { return collectedOutputParams; }
 
     public CompletableFuture<WorkflowNode> executeAsync(ExecutionContext ctx, Map<String, String> inputParams) {
         ResolvedRetry retry = ResolvedRetry.from(templateRetryStrategy, ctx.defaultRetryStrategy);
@@ -273,6 +276,11 @@ abstract class BaseCompositeRun {
                 log.debug("child '{}': {} output artifact(s) collected", childName, arts.size());
                 artifactsMap.put(childName, arts);
             }
+            Map<String, String> params = composite.collectedOutputParams();
+            if (!params.isEmpty()) {
+                log.debug("child '{}': {} output parameter(s) collected", childName, params.size());
+                outputParams.put(childName, params);
+            }
         }
         return result;
     }
@@ -302,25 +310,59 @@ abstract class BaseCompositeRun {
         return Collections.unmodifiableMap(immutable);
     }
 
+    private static final java.util.regex.Pattern TASK_ARTIFACT_IN_EXPRESSION =
+            java.util.regex.Pattern.compile("tasks\\['([^']+)'\\]\\.outputs\\.artifacts\\['([^']+)'\\]");
+
     private void addNeeded(Artifact art, Pattern fromPattern, Map<String, Set<String>> needed) {
-        if (art.getFrom() == null) return;
-        var m = fromPattern.matcher(art.getFrom().trim());
-        if (m.matches()) needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
+        if (art.getFrom() != null) {
+            var m = fromPattern.matcher(art.getFrom().trim());
+            if (m.matches()) needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
+        }
+        if (art.getFromExpression() != null) {
+            var m = TASK_ARTIFACT_IN_EXPRESSION.matcher(art.getFromExpression());
+            while (m.find()) {
+                needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
+            }
+        }
     }
 
     /**
      * Resolves {@code outputs.artifacts} declared on the original template and stores them in
-     * {@link #collectedArtifacts}. Subclasses call this at the end of each iteration.
+     * {@link #collectedArtifacts}. Handles both {@code from:} references and {@code fromExpression}.
+     * Subclasses call this at the end of each iteration.
      */
-    protected void resolveOutputArtifacts(ExecutionContext localCtx) {
+    protected void resolveOutputArtifacts(ExecutionContext localCtx, Map<String, String> inputParams) {
         if (originalTemplate.getOutputs() == null
                 || originalTemplate.getOutputs().getArtifacts() == null) return;
         Map<String, Path> outputs = new LinkedHashMap<>();
         for (var art : originalTemplate.getOutputs().getArtifacts()) {
             if (art.getFrom() != null) {
                 localCtx.resolveArtifactFrom(art.getFrom()).ifPresent(p -> outputs.put(art.getName(), p));
+            } else if (art.getFromExpression() != null) {
+                Path resolved = ExpressionEngine.evaluateOutputArtifactExpression(
+                        art.getFromExpression(), inputParams, localCtx.taskArtifacts);
+                if (resolved != null) outputs.put(art.getName(), resolved);
             }
         }
         if (!outputs.isEmpty()) this.collectedArtifacts = Map.copyOf(outputs);
+    }
+
+    /**
+     * Evaluates {@code outputs.parameters[].valueFrom.expression} on the original template and
+     * stores results in {@link #collectedOutputParams}. Subclasses call this at the end of each
+     * iteration.
+     */
+    protected void resolveOutputParameters(ExecutionContext localCtx, Map<String, String> inputParams) {
+        if (originalTemplate.getOutputs() == null
+                || originalTemplate.getOutputs().getParameters() == null) return;
+        Map<String, String> outputs = new LinkedHashMap<>();
+        for (Parameter param : originalTemplate.getOutputs().getParameters()) {
+            if (param.getValueFrom() != null && param.getValueFrom().getExpression() != null) {
+                String value = ExpressionEngine.evaluateOutputParamExpression(
+                        param.getValueFrom().getExpression(), inputParams, localCtx.taskOutputParams);
+                if (value != null) outputs.put(param.getName(), value);
+            }
+        }
+        if (!outputs.isEmpty()) this.collectedOutputParams = Map.copyOf(outputs);
     }
 }

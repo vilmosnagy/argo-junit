@@ -42,7 +42,7 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
         for (DAGTask t : dagTasks) taskNames.add(t.getName());
 
         for (DAGTask t : dagTasks) {
-            for (String dep : new DependsExpression(t.getDepends()).taskNames()) {
+            for (String dep : DependsExpression.from(t.getDepends(), t.getDependencies()).taskNames()) {
                 if (!taskNames.contains(dep)) {
                     throw new IllegalArgumentException(
                             "DAG '" + name + "': task '" + t.getName()
@@ -75,7 +75,7 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
             String childOwner = t.getTemplate() != null ? owningWt
                     : t.getTemplateRef() != null ? t.getTemplateRef().getName() : null;
             builtSpecs.add(new DagTaskSpec(t.getName(),
-                    new DependsExpression(t.getDepends()), t.getWhen(),
+                    DependsExpression.from(t.getDepends(), t.getDependencies()), t.getWhen(),
                     resolveArgs(t.getArguments()),
                     resolveArtifactArgs(t.getArguments()),
                     taskTemplate, childOwner));
@@ -197,7 +197,8 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                 }))
                 .thenApply(_ -> {
                     log.debug("Dag '{}': all tasks completed", name);
-                    resolveOutputArtifacts(localCtx);
+                    resolveOutputArtifacts(localCtx, inputParams);
+                    resolveOutputParameters(localCtx, inputParams);
                     return (WorkflowNode) this;
                 });
     }

@@ -3,6 +3,11 @@ package eu.vnagy.argotools.junit.expression;
 import org.apache.commons.jexl3.JexlBuilder;
 import org.apache.commons.jexl3.JexlContext;
 import org.apache.commons.jexl3.JexlEngine;
+import org.apache.commons.jexl3.MapContext;
+
+import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Evaluates workflow expressions using Apache JEXL3.
@@ -63,5 +68,107 @@ public final class ExpressionEngine {
             throw new IllegalArgumentException(
                     "Failed to evaluate 'when' condition [" + condition + "]: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Evaluates a {@code valueFrom.expression} on a DAG output parameter.
+     *
+     * <p>The expression may reference:
+     * <ul>
+     *   <li>{@code inputs.parameters['name']} — the DAG template's own input parameters</li>
+     *   <li>{@code tasks['task-name'].outputs.parameters.name} — a child task's output parameter</li>
+     * </ul>
+     *
+     * @return the resolved parameter value, or {@code null} if the expression returns null
+     */
+    public static String evaluateOutputParamExpression(
+            String expression,
+            Map<String, String> inputParams,
+            Map<String, Map<String, String>> taskOutputParams) {
+        JexlContext ctx = buildContext(inputParams, taskOutputParams, null);
+        try {
+            Object result = JEXL.createExpression(expression).evaluate(ctx);
+            return result != null ? String.valueOf(result) : null;
+        } catch (Exception e) {
+            throw new IllegalArgumentException(
+                    "Failed to evaluate output parameter expression [" + expression + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Evaluates a {@code fromExpression} on a DAG output artifact.
+     *
+     * <p>The expression may reference:
+     * <ul>
+     *   <li>{@code inputs.parameters['name']} — the DAG template's own input parameters</li>
+     *   <li>{@code tasks['task-name'].outputs.artifacts['name']} — a child task's output artifact path</li>
+     * </ul>
+     *
+     * @return the resolved artifact {@link Path}, or {@code null} if the expression returns null
+     * @throws IllegalArgumentException if the expression doesn't resolve to a Path
+     */
+    public static Path evaluateOutputArtifactExpression(
+            String expression,
+            Map<String, String> inputParams,
+            Map<String, Map<String, Path>> taskArtifacts) {
+        JexlContext ctx = buildContext(inputParams, null, taskArtifacts);
+        try {
+            Object result = JEXL.createExpression(expression).evaluate(ctx);
+            if (result == null) return null;
+            if (result instanceof Path path) return path;
+            throw new IllegalArgumentException(
+                    "Expression [" + expression + "] did not resolve to a Path; got: "
+                    + result.getClass().getName());
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException(
+                    "Failed to evaluate output artifact expression [" + expression + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Builds a JEXL context with {@code inputs} and {@code tasks} variables for output expressions.
+     *
+     * <ul>
+     *   <li>{@code inputs.parameters} → the given inputParams map</li>
+     *   <li>{@code tasks['t'].outputs.parameters} → per-task output param maps (when non-null)</li>
+     *   <li>{@code tasks['t'].outputs.artifacts} → per-task output artifact maps (when non-null)</li>
+     * </ul>
+     */
+    private static JexlContext buildContext(
+            Map<String, String> inputParams,
+            Map<String, Map<String, String>> taskOutputParams,
+            Map<String, Map<String, Path>> taskArtifacts) {
+
+        Map<String, Object> inputsMap = new HashMap<>();
+        inputsMap.put("parameters", new HashMap<>(inputParams));
+
+        Map<String, Object> tasksMap = new HashMap<>();
+        if (taskOutputParams != null) {
+            taskOutputParams.forEach((taskName, params) -> {
+                Map<String, Object> outputs = new HashMap<>();
+                outputs.put("parameters", new HashMap<>(params));
+                Map<String, Object> task = new HashMap<>();
+                task.put("outputs", outputs);
+                tasksMap.put(taskName, task);
+            });
+        }
+        if (taskArtifacts != null) {
+            taskArtifacts.forEach((taskName, artifacts) -> {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> task = (Map<String, Object>) tasksMap.computeIfAbsent(
+                        taskName, k -> new HashMap<>());
+                @SuppressWarnings("unchecked")
+                Map<String, Object> outputs = (Map<String, Object>) task.computeIfAbsent(
+                        "outputs", k -> new HashMap<>());
+                outputs.put("artifacts", new HashMap<>(artifacts));
+            });
+        }
+
+        MapContext ctx = new MapContext();
+        ctx.set("inputs", inputsMap);
+        ctx.set("tasks", tasksMap);
+        return ctx;
     }
 }

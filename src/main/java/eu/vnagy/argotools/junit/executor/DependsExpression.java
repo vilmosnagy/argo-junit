@@ -1,6 +1,7 @@
 package eu.vnagy.argotools.junit.executor;
 
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -41,6 +42,21 @@ public final class DependsExpression {
     public DependsExpression(String depends) {
         this.raw   = (depends == null || depends.isBlank()) ? "" : depends;
         this.names = parseNames(this.raw);
+    }
+
+    /**
+     * Constructs a {@code DependsExpression} from either the {@code depends:} expression string
+     * or the {@code dependencies:} list, whichever is present.
+     *
+     * <p>When {@code dependencies:} is used (the simple list form), each name is implicitly
+     * a bare-name dependency (equivalent to {@code A && B} in the expression form).
+     */
+    public static DependsExpression from(String depends, List<String> dependencies) {
+        if (depends != null && !depends.isBlank()) return new DependsExpression(depends);
+        if (dependencies != null && !dependencies.isEmpty()) {
+            return new DependsExpression(String.join(" && ", dependencies));
+        }
+        return new DependsExpression(null);
     }
 
     /**

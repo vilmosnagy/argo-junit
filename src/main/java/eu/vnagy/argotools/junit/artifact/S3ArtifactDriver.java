@@ -24,6 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
+import java.util.List;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
@@ -81,9 +82,13 @@ public class S3ArtifactDriver implements ArtifactDriver {
                 Path destDir = Files.createTempDirectory(tempDir, "s3-in-");
                 extractTarGz(content, destDir);
                 try (Stream<Path> ls = Files.list(destDir)) {
-                    return ls.findFirst().orElseThrow(() -> new IllegalStateException(
+                    List<Path> rootEntries = ls.toList();
+                    if (rootEntries.isEmpty()) throw new IllegalStateException(
                             "No content extracted from S3 artifact '" + artifact.getName()
-                            + "' at key=" + s3.getKey()));
+                            + "' at key=" + s3.getKey());
+                    if (rootEntries.size() == 1 && Files.isRegularFile(rootEntries.get(0)))
+                        return rootEntries.get(0);
+                    return destDir;
                 }
             }
         }

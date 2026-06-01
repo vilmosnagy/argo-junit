@@ -531,10 +531,14 @@ public final class PodRun implements WorkflowNode {
             if (hostPath != null) {
                 log.debug("Pod '{}': injecting input artifact '{}' at '{}' mode={}",
                         name, decl.name(), decl.path(), decl.mode());
-                MountableFile mf = decl.mode() != null
-                        ? MountableFile.forHostPath(hostPath, decl.mode())
-                        : MountableFile.forHostPath(hostPath);
-                cont.withCopyFileToContainer(mf, decl.path());
+                if (Files.isDirectory(hostPath)) {
+                    cont.withFileSystemBind(hostPath.toString(), decl.path(), BindMode.READ_WRITE);
+                } else {
+                    MountableFile mf = decl.mode() != null
+                            ? MountableFile.forHostPath(hostPath, decl.mode())
+                            : MountableFile.forHostPath(hostPath);
+                    cont.withCopyFileToContainer(mf, decl.path());
+                }
             }
         }
 

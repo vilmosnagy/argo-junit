@@ -6,7 +6,33 @@
 
     <groupId>eu.vnagy.argotools</groupId>
     <artifactId>argo-junit</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <name>Argo JUnit</name>
+    <description>A JUnit 5 library that executes Argo Workflows locally against real containers, without a Kubernetes cluster. Write tests that run your actual workflows and assert on their outcomes, step outputs, and artifacts.</description>
+    <url>https://github.com/vilmosnagy/argo-junit</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <scm>
+        <url>https://github.com/vilmosnagy/argo-junit</url>
+        <connection>scm:git:git@github.com:vilmosnagy/argo-junit.git</connection>
+        <tag>HEAD</tag>
+    </scm>
+
+    <developers>
+        <developer>
+            <name>Vilmos Szabó-Nagy</name>
+            <email>me@vnagy.eu</email>
+            <url>https://vnagy.eu</url>
+        </developer>
+    </developers>
 
     <properties>
         <maven.compiler.source>25</maven.compiler.source>
@@ -200,6 +226,87 @@
                             -->
                             <overwrite>true</overwrite>
                         </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>license-maven-plugin</artifactId>
+                <version>2.7.1</version>
+                <executions>
+                    <execution>
+                        <id>update-project-license</id>
+                        <goals>
+                            <goal>update-project-license</goal>
+                        </goals>
+                        <configuration>
+                            <inceptionYear>2026</inceptionYear>
+                            <licenseName>apache_v2</licenseName>
+                            <organizationName>Vilmos Szabó-Nagy</organizationName>
+                            <projectName>Argo JUnit</projectName>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>update-file-header</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>update-file-header</goal>
+                        </goals>
+                        <configuration>
+                            <inceptionYear>2026</inceptionYear>
+                            <licenseName>apache_v2</licenseName>
+                            <organizationName>Vilmos Szabó-Nagy</organizationName>
+                            <projectName>Argo JUnit</projectName>
+                            <excludes>
+                                <exclude>**/resources/examples/*</exclude>
+                                <exclude>**/resources/examples/**/*</exclude>
+                            </excludes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.14</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <!-- attached to Maven test phase -->
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <excludes>eu/vnagy/argotools/junit/model/*</excludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.12.0</version>
+                <configuration>
+                    <source>${java.version}</source>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>3.4.0</version>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
                     </execution>
                 </executions>
             </plugin>

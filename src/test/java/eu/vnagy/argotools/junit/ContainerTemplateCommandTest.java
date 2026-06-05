@@ -31,6 +31,7 @@ import org.testcontainers.images.builder.ImageFromDockerfile;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.Duration;
 
 /**
  * Verifies that a {@code container:} template's {@code command} array is applied as the Docker
@@ -73,7 +74,7 @@ class ContainerTemplateCommandTest {
                 """.formatted(imageWithFalseEntrypoint);
 
         Workflow wf = ArgoWorkflowExecutor.yamlMapper().readValue(yaml, Workflow.class);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "container template command must override the image ENTRYPOINT, not append to it");
             assertThat("container output contains hello", ((PodRun) run.entrypoint()).logs(), containsString("hello"));
@@ -100,7 +101,7 @@ class ContainerTemplateCommandTest {
                 """;
 
         Workflow wf = ArgoWorkflowExecutor.yamlMapper().readValue(yaml, Workflow.class);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(), "container template with command and no args must succeed");
             assertThat("output contains hello", ((PodRun) run.entrypoint()).logs(), containsString("hello"));
         }

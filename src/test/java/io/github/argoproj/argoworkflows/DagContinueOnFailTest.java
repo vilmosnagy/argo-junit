@@ -30,6 +30,7 @@ import java.nio.file.Path;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 /**
  * Verifies continue-on-fail DAG behaviour against dag-continue-on-fail.yaml.
@@ -57,7 +58,7 @@ class DagContinueOnFailTest {
     void continueOnFailRunsDependentOnFailedTask() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/dag-continue-on-fail.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         DagRun dag = (DagRun) run.entrypoint();
 

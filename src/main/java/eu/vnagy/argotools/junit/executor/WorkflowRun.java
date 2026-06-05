@@ -26,11 +26,14 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Comparator;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public final class WorkflowRun implements AutoCloseable {
 
@@ -56,6 +59,24 @@ public final class WorkflowRun implements AutoCloseable {
             Throwable cause = e.getCause();
             if (cause instanceof Exception ex) throw ex;
             throw new RuntimeException(cause);
+        }
+        return this;
+    }
+
+    /**
+     * Blocks until the workflow completes or {@code timeout} elapses, then returns {@code this}.
+     *
+     * @throws AssertionError if the workflow does not finish within {@code timeout}
+     */
+    public WorkflowRun await(Duration timeout) throws Exception {
+        try {
+            future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception ex) throw ex;
+            throw new RuntimeException(cause);
+        } catch (TimeoutException e) {
+            throw new AssertionError("Workflow did not complete within " + timeout, e);
         }
         return this;
     }

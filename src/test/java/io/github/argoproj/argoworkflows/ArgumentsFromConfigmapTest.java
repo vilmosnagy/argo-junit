@@ -31,6 +31,7 @@ import java.nio.file.Path;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class ArgumentsFromConfigmapTest {
 
@@ -50,7 +51,7 @@ class ArgumentsFromConfigmapTest {
                         .build())
                 .create();
 
-        WorkflowRun run = executor.execute();
+        WorkflowRun run = executor.execute(Duration.ofMinutes(10));
         assertThat(run.succeeded(), is(true));
         assertThat(run.entrypoint(), is(instanceOf(PodRun.class)));
         assertThat(((PodRun) run.entrypoint()).logs().strip(), is("hello world"));

@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.fail;
+import java.time.Duration;
 
 /**
  * Tests that a running {@link WorkflowRun} reflects in-progress state correctly by walking
@@ -110,7 +111,7 @@ class LiveWorkflowRunTest {
 
         released.set(true); // unblock slow-start; next HTTP poll returns 200
 
-        live.await();
+        live.await(Duration.ofMinutes(10));
         assertThat(live.succeeded(), is(true));
 
         System.out.println("=== Final result ===");

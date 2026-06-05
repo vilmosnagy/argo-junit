@@ -50,7 +50,7 @@ spec:
           port = {{workflow.parameters.release_port}}
           while True:
               try:
-                  r = urllib.request.urlopen(f"http://host.docker.internal:{port}/ready", timeout=2)
+                  r = urllib.request.urlopen(f"http://host.testcontainers.internal:{port}/ready", timeout=2)
                   if r.status == 200:
                       break
               except Exception:

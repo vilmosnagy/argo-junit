@@ -27,6 +27,7 @@ import java.nio.file.Path;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class ArtifactLifecycleTest {
 
@@ -34,7 +35,7 @@ class ArtifactLifecycleTest {
     void unconsumedArtifactNotExtracted() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/unconsumed-artifact.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow succeeded", run.succeeded(), is(true));
             try (var ls = Files.list(run.tmpDir)) {
@@ -49,7 +50,7 @@ class ArtifactLifecycleTest {
         Path tmpDir;
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/artifact-dag.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             tmpDir = run.tmpDir;
             assertThat("workflow succeeded", run.succeeded(), is(true));

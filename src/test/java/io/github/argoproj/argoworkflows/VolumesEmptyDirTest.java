@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class VolumesEmptyDirTest {
 
@@ -50,7 +51,7 @@ class VolumesEmptyDirTest {
     void emptyDirVolumeIsMounted() throws Exception {
         Workflow wf = YAML.readValue(
                 getClass().getResource("/examples/volumes-emptydir.yaml"), Workflow.class);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
         }
     }

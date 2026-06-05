@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 /**
  * Verifies that {@code spec.templateDefaults.retryStrategy} is used as a fallback when a
@@ -93,7 +94,7 @@ class TemplateDefaultsRetryTest {
                       args:
                       - |
                         while true; do
-                          RESULT=$(wget -qO- http://host.docker.internal:{{workflow.parameters.port}}/outcome 2>/dev/null)
+                          RESULT=$(wget -qO- http://host.testcontainers.internal:{{workflow.parameters.port}}/outcome 2>/dev/null)
                           case "$RESULT" in
                             succeed) exit 0 ;;
                             fail) exit 1 ;;
@@ -111,7 +112,7 @@ class TemplateDefaultsRetryTest {
                     .findFirst().orElseThrow()
                     .setValue(String.valueOf(gate.port()));
 
-            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
                 assertThat("workflow failed without retrying", run.failed(), is(true));
                 assertThat("exactly 1 attempt (template limit:0 overrides defaults)",
                         ((PodRun) run.entrypoint()).attempts(), is(1));
@@ -125,6 +126,6 @@ class TemplateDefaultsRetryTest {
                 .filter(p -> "port".equals(p.getName()))
                 .findFirst().orElseThrow()
                 .setValue(String.valueOf(gate.port()));
-        return ArgoWorkflowExecutor.from(wf).execute();
+        return ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10));
     }
 }

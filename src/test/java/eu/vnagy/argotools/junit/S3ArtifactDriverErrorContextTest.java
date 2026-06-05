@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.Duration;
 
 /**
  * Verifies that when an S3 download fails (e.g. key does not exist), the error message
@@ -111,7 +112,7 @@ class S3ArtifactDriverErrorContextTest {
                 """, minio.endpoint(), BUCKET, MISSING_KEY, SECRET_NAME, SECRET_NAME);
 
         Workflow wf = ArgoWorkflowExecutor.yamlMapper().readValue(yaml, Workflow.class);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.errored(), "Run must be errored when S3 key does not exist");
 
             String summary = WorkflowSummary.format(run);

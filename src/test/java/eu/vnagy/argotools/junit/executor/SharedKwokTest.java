@@ -31,6 +31,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
+import java.time.Duration;
 
 /**
  * Demonstrates the bring-your-own-kwok pattern: a single KwokContainer is started once
@@ -72,7 +73,7 @@ class SharedKwokTest {
 
         executor.withKwok(kwok);
 
-        try (WorkflowRun run = executor.execute()) {
+        try (WorkflowRun run = executor.execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             assertThat(run.entrypoint(), instanceOf(PodRun.class));
             assertThat(((PodRun) run.entrypoint()).logs().strip(), is("shared value"));
@@ -88,7 +89,7 @@ class SharedKwokTest {
     void secondExecutorReusesSharedKwokWithNoStartupCost() throws Exception {
         try (var executor = ArgoWorkflowExecutor.from(
                 Path.of(getClass().getResource(WORKFLOW).toURI())).withKwok(kwok);
-             WorkflowRun run = executor.execute()) {
+             WorkflowRun run = executor.execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
         }
     }

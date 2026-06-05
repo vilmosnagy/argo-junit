@@ -56,6 +56,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class WorkflowSummaryTest {
 
@@ -66,7 +67,7 @@ class WorkflowSummaryTest {
     void helloWorld() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/hello-world.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                 Status:  Succeeded
@@ -80,7 +81,7 @@ class WorkflowSummaryTest {
     void coinflip() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/coinflip.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         String summary = normalizeDurations(WorkflowSummary.format(run));
 
@@ -111,7 +112,7 @@ class WorkflowSummaryTest {
     void dagDiamond() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/dag-diamond.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                 Status:  Succeeded
@@ -135,7 +136,7 @@ class WorkflowSummaryTest {
             Workflow wf = YAML.readValue(getClass().getResource("/retry-gate.yaml"), Workflow.class);
             setParam(wf, "port", String.valueOf(gate.port()));
 
-            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
                 assertThat("workflow succeeded", run.succeeded(), is(true));
                 assertThat("3 attempts recorded", ((PodRun) run.entrypoint()).attempts(), is(3));
                 assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
@@ -159,7 +160,7 @@ class WorkflowSummaryTest {
             Workflow wf = YAML.readValue(getClass().getResource("/retry-gate.yaml"), Workflow.class);
             setParam(wf, "port", String.valueOf(gate.port()));
 
-            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
                 assertThat("workflow failed after exhausting retries", run.failed(), is(true));
                 assertThat("6 attempts (1 initial + limit 5)", ((PodRun) run.entrypoint()).attempts(), is(6));
                 assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
@@ -188,7 +189,7 @@ class WorkflowSummaryTest {
             Workflow wf = YAML.readValue(getClass().getResource("/retry-dag.yaml"), Workflow.class);
             setParam(wf, "port", String.valueOf(gate.port()));
 
-            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
                 assertThat("dag succeeded", run.succeeded(), is(true));
                 assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                         Status:  Succeeded
@@ -214,7 +215,7 @@ class WorkflowSummaryTest {
             Workflow wf = YAML.readValue(getClass().getResource("/retry-dag.yaml"), Workflow.class);
             setParam(wf, "port", String.valueOf(gate.port()));
 
-            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
                 assertThat("dag failed after exhausting retries", run.failed(), is(true));
                 assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                         Status:  Failed
@@ -248,7 +249,7 @@ class WorkflowSummaryTest {
             Workflow wf = YAML.readValue(getClass().getResource("/retry-steps.yaml"), Workflow.class);
             setParam(wf, "port", String.valueOf(gate.port()));
 
-            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
                 assertThat("steps succeeded", run.succeeded(), is(true));
                 assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                         Status:  Succeeded
@@ -274,7 +275,7 @@ class WorkflowSummaryTest {
             Workflow wf = YAML.readValue(getClass().getResource("/retry-steps.yaml"), Workflow.class);
             setParam(wf, "port", String.valueOf(gate.port()));
 
-            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
                 assertThat("steps failed after exhausting retries", run.failed(), is(true));
                 assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                         Status:  Failed
@@ -412,7 +413,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
@@ -470,7 +471,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
@@ -529,7 +530,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
@@ -587,7 +588,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
@@ -646,7 +647,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
@@ -704,7 +705,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
@@ -763,7 +764,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
@@ -821,7 +822,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
@@ -878,7 +879,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored
@@ -935,7 +936,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             boolean warnHasStackTrace = loggerExtension.events().stream()
                     .filter(e -> e.getFormattedMessage().contains("data/corrupt.tar.gz"))
@@ -988,7 +989,7 @@ class WorkflowSummaryTest {
                             source: cat /data/input.txt
                     """;
 
-            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute();
+            WorkflowRun run = ArgoWorkflowExecutor.from(patchEndpointAndBucket(yaml)).withKwok(kwok).execute(Duration.ofMinutes(10));
 
             assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
                     Status:  Errored

@@ -29,6 +29,7 @@ import java.nio.file.Path;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import java.time.Duration;
 
 class RetryTest {
 
@@ -36,7 +37,7 @@ class RetryTest {
     void retryContainer() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/retry-container.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow either succeeded or not after retries", run.succeeded(), oneOf(true, false));
             PodRun pod = (PodRun) run.entrypoint();
@@ -52,7 +53,7 @@ class RetryTest {
     void retryBackoff() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/retry-backoff.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow either succeeded or not after retries with backoff", run.succeeded(), oneOf(true, false));
             PodRun pod = (PodRun) run.entrypoint();
@@ -67,7 +68,7 @@ class RetryTest {
     void retryToCompletion() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/retry-container-to-completion.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow eventually succeeded with unlimited retries", run.succeeded(), is(true));
             PodRun pod = (PodRun) run.entrypoint();
@@ -82,7 +83,7 @@ class RetryTest {
         // the test just verifies the limit is respected.
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/retry-on-error.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             PodRun pod = (PodRun) run.entrypoint();
             assertThat("attempts recorded", pod.attempts(), greaterThan(0));

@@ -33,6 +33,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.Duration;
 
 /**
  * Verifies that {{workflow.parameters.*}} placeholders in a template's own
@@ -131,7 +132,7 @@ class InputArtifactS3CredSubstitutionTest {
                 """;
 
         Workflow wf = patchParams(yaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "DAG: {{workflow.parameters.*}} in template inputs.artifacts S3 creds must be substituted before download");
         }
@@ -186,7 +187,7 @@ class InputArtifactS3CredSubstitutionTest {
                 """;
 
         Workflow wf = patchParams(yaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "Steps: {{workflow.parameters.*}} in template inputs.artifacts S3 creds must be substituted before download");
         }

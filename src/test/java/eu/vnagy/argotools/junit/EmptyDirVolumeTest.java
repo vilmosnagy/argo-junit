@@ -30,13 +30,14 @@ import java.nio.file.Path;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class EmptyDirVolumeTest {
 
     @Test
     void emptyDirVolumeIsMounted() throws Exception {
         Path yaml = Path.of(getClass().getResource("/emptydir-mount-check.yaml").toURI());
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(yaml).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(yaml).execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             assertThat(((PodRun) run.entrypoint()).logs(), containsString("Volume mounted and found"));
         }

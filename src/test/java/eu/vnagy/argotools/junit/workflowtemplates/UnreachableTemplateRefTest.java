@@ -29,6 +29,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.Duration;
 
 /**
  * Verifies that a templateRef only present in an unreachable template of an installed
@@ -79,7 +80,7 @@ class UnreachableTemplateRefTest {
 
         try (WorkflowRun run = ArgoWorkflowExecutor.from(workflow)
                 .withKwok(argoKwok.container())
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "workflow should succeed — 'missing-wt' is unreachable from entrypoint 'main'");
         }

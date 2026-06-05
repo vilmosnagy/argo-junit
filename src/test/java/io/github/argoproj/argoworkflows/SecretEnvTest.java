@@ -38,6 +38,7 @@ import java.util.Map;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import java.time.Duration;
 
 /**
  * Tests env[].valueFrom.secretKeyRef using the upstream secrets.yaml example.
@@ -78,7 +79,7 @@ class SecretEnvTest {
         Workflow wf = YAML.readValue(
                 getClass().getResource("/examples/secrets.yaml"), Workflow.class);
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             assertThat(((PodRun) run.entrypoint()).logs(), containsString("secret from env: S00perS3cretPa55word"));
         }

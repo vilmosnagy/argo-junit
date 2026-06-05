@@ -37,6 +37,7 @@ import java.util.Map;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import java.time.Duration;
 
 /**
  * Tests workflow and template parameters sourced from ConfigMap keys.
@@ -75,7 +76,7 @@ class ConfigMapTest {
         Workflow wf = YAML.readValue(
                 getClass().getResource("/examples/arguments-parameters-from-configmap.yaml"), Workflow.class);
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             assertThat(((PodRun) run.entrypoint()).logs(), containsString("hello world"));
         }
@@ -87,7 +88,7 @@ class ConfigMapTest {
         Workflow wf = YAML.readValue(
                 getClass().getResource("/examples/global-parameters-from-configmap.yaml"), Workflow.class);
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             assertThat(((PodRun) run.entrypoint()).logs(), containsString("hello world"));
         }
@@ -104,7 +105,7 @@ class ConfigMapTest {
                         "/examples/global-parameters-from-configmap-referenced-as-local-variable.yaml"),
                 Workflow.class);
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             assertThat(((PodRun) run.entrypoint()).logs(), containsString("hello world"));
         }

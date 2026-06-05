@@ -43,6 +43,7 @@ import java.io.ByteArrayOutputStream;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.Duration;
 
 /**
  * Verifies that a directory artifact stored in S3 as a flat tar.gz (archive created with
@@ -162,7 +163,7 @@ class S3DirectoryArtifactTest {
                 """;
 
         Workflow wf = patchEndpointAndBucket(yaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(), "workflow must succeed — /input must be a directory");
             StepsRun steps = (StepsRun) run.entrypoint();
             PodRun reader = (PodRun) steps.get("read-dir");
@@ -221,7 +222,7 @@ class S3DirectoryArtifactTest {
                 """;
 
         Workflow wf = patchEndpointAndBucket(yaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(), "workflow must succeed — /input must be a directory");
             DagRun dag = (DagRun) run.entrypoint();
             PodRun reader = (PodRun) dag.get("read-dir");

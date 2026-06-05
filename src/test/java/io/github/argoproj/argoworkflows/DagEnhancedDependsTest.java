@@ -30,6 +30,7 @@ import java.nio.file.Path;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 /**
  * Verifies enhanced depends logic against dag-enhanced-depends.yaml.
@@ -60,7 +61,7 @@ class DagEnhancedDependsTest {
     void enhancedDependsSkipsAndRunsCorrectly() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/dag-enhanced-depends.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         DagRun dag = (DagRun) run.entrypoint();
 

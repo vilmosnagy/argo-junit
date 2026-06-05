@@ -37,6 +37,7 @@ import java.nio.charset.StandardCharsets;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.Duration;
 
 /**
  * Verifies DAG-level output expressions:
@@ -96,7 +97,7 @@ class DagOutputExpressionTest {
         String yaml = buildParameterExpressionWorkflow(selector, s3Key);
 
         Workflow wf = ArgoWorkflowExecutor.yamlMapper().readValue(yaml, Workflow.class);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(), "Workflow must succeed before checking S3");
         }
 
@@ -123,7 +124,7 @@ class DagOutputExpressionTest {
         String yaml = buildArtifactExpressionWorkflow(mode, s3Key);
 
         Workflow wf = ArgoWorkflowExecutor.yamlMapper().readValue(yaml, Workflow.class);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(), "Workflow must succeed before checking S3");
         }
 

@@ -31,6 +31,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class ArgumentsArtifactsTest {
 
@@ -42,7 +43,7 @@ class ArgumentsArtifactsTest {
         // Start kwok — the kubectl binary inside the container will use it as the API server
         executor.getKubernetesClient();
 
-        try (WorkflowRun run = executor.execute()) {
+        try (WorkflowRun run = executor.execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             assertThat(run.entrypoint(), instanceOf(PodRun.class));
             // kubectl version prints both client and server version when the API server is reachable

@@ -32,6 +32,7 @@ import java.nio.file.Path;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class DefaultParamTest {
 
@@ -39,7 +40,7 @@ class DefaultParamTest {
     void dagMissingParameterFallsBackToTemplateDefault() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/dag-default-param.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow succeeded", run.succeeded(), is(true));
 
@@ -55,7 +56,7 @@ class DefaultParamTest {
     void stepsMissingParameterFallsBackToTemplateDefault() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/steps-default-param.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow succeeded", run.succeeded(), is(true));
 

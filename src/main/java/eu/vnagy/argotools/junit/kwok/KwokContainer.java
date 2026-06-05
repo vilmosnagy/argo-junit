@@ -23,6 +23,8 @@ package eu.vnagy.argotools.junit.kwok;
 import io.fabric8.kubernetes.client.Config;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -44,6 +46,8 @@ import java.time.Duration;
  */
 public class KwokContainer extends GenericContainer<KwokContainer> {
 
+    private static final Logger log = LoggerFactory.getLogger(KwokContainer.class);
+
     static final int API_PORT = 8080;
     private static final String NETWORK_ALIAS = "kwok";
     private static final String DEFAULT_IMAGE =
@@ -61,6 +65,14 @@ public class KwokContainer extends GenericContainer<KwokContainer> {
                 .forPort(API_PORT)
                 .forStatusCode(200)
                 .withStartupTimeout(Duration.ofMinutes(2)));
+    }
+
+    @Override
+    public void stop() {
+        super.stop();
+        try { sharedNetwork.close(); } catch (Exception e) {
+            log.error("Failed to close shared network", e);
+        }
     }
 
     /** Docker network that step containers should join to reach this cluster by hostname. */

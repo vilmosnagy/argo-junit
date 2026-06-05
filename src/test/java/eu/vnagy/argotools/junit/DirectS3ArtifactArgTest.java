@@ -37,6 +37,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.Duration;
 
 /**
  * Verifies that a step/task argument artifact with a direct S3 source (no {@code from:}) is
@@ -130,7 +131,7 @@ class DirectS3ArtifactArgTest {
                 """;
 
         Workflow wf = patchEndpointAndBucket(workflowYaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "DAG task with direct S3 artifact argument must download the file into the container");
         }
@@ -185,7 +186,7 @@ class DirectS3ArtifactArgTest {
                 """;
 
         Workflow wf = patchEndpointAndBucket(workflowYaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "Steps step with direct S3 artifact argument must download the file into the container");
         }
@@ -241,7 +242,7 @@ class DirectS3ArtifactArgTest {
                 """;
 
         Workflow wf = patchEndpointAndBucket(workflowYaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertFalse(run.succeeded(), "Workflow must not succeed when S3 object is missing");
             assertTrue(run.errored(), "Workflow must be in errored state");
             assertThat(WorkflowSummary.format(run), containsString("The specified key does not exist"));
@@ -297,7 +298,7 @@ class DirectS3ArtifactArgTest {
                 """;
 
         Workflow wf = patchEndpointAndBucket(workflowYaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertFalse(run.succeeded(), "Workflow must not succeed when S3 object is missing");
             assertTrue(run.errored(), "Workflow must be in errored state");
             assertThat(WorkflowSummary.format(run), containsString("The specified key does not exist"));
@@ -367,7 +368,7 @@ class DirectS3ArtifactArgTest {
                 """;
 
         Workflow wf = patchEndpointAndBucket(workflowYaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "DAG task: {{inputs.parameters.*}} in S3 artifact key must be substituted before download");
         }
@@ -435,7 +436,7 @@ class DirectS3ArtifactArgTest {
                 """;
 
         Workflow wf = patchEndpointAndBucket(workflowYaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "Steps step: {{inputs.parameters.*}} in S3 artifact key must be substituted before download");
         }
@@ -505,7 +506,7 @@ class DirectS3ArtifactArgTest {
                 """;
 
         Workflow wf = patchEndpointAndBucket(workflowYaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "DAG task: {{tasks.X.outputs.parameters.*}} in S3 artifact key must be substituted before download");
         }
@@ -573,7 +574,7 @@ class DirectS3ArtifactArgTest {
                 """;
 
         Workflow wf = patchEndpointAndBucket(workflowYaml);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "Steps step: {{steps.X.outputs.parameters.*}} in S3 artifact key must be substituted before download");
         }

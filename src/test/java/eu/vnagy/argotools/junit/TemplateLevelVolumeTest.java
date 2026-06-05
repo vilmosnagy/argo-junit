@@ -32,6 +32,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.Duration;
 
 /**
  * Verifies that volumes declared under {@code template.volumes} (template-level scope)
@@ -84,7 +85,7 @@ class TemplateLevelVolumeTest {
                             .build()
             ).create();
 
-            try (WorkflowRun run = executor.execute()) {
+            try (WorkflowRun run = executor.execute(Duration.ofMinutes(10))) {
                 assertTrue(run.succeeded(), "template-level configMap volume must be mounted");
                 PodRun pod = (PodRun) run.entrypoint();
                 assertEquals("world", pod.collectedOutputParams().get("result"),

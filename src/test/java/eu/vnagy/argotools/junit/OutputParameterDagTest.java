@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import java.time.Duration;
 
 class OutputParameterDagTest {
 
@@ -43,7 +44,7 @@ class OutputParameterDagTest {
         Workflow wf = YAML.readValue(
                 getClass().getResource("/output-parameter-dag.yaml"), Workflow.class);
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             DagRun dag = (DagRun) run.entrypoint();
             PodRun consumer = (PodRun) dag.get("consume-parameter");

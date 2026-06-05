@@ -34,6 +34,7 @@ import java.nio.file.Path;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 /**
  * Verifies that when two WorkflowTemplates each contain a template with the same local name
@@ -75,7 +76,7 @@ class WorkflowTemplateSiblingCollisionTest {
 
         try (WorkflowRun run = ArgoWorkflowExecutor.from(workflowPath)
                 .withKwok(argoKwok.container())
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat(run.succeeded(), is(true));
 

@@ -37,6 +37,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.fail;
+import java.time.Duration;
 
 /**
  * Demonstrates and verifies how the live workflow tree expands as a recursive
@@ -108,7 +109,7 @@ class CountdownLoopTest {
 
             gate.release(); // release permanently — levels 2 and 3 will run immediately
 
-            live.await();
+            live.await(Duration.ofMinutes(10));
             assertThat(live.succeeded(), is(true));
 
             // Verify the three-level recursive structure in the completed tree

@@ -40,6 +40,7 @@ import java.util.Map;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class VolumeMountTest {
 
@@ -77,7 +78,7 @@ class VolumeMountTest {
     void configMapVolumeIsProjectedIntoContainer() throws Exception {
         Workflow wf = YAML.readValue(
                 getClass().getResource("/volume-configmap.yaml"), Workflow.class);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             // The container cats /config/greeting and /config/farewell
             assertThat(((PodRun) run.entrypoint()).logs(), containsString("Hello from ConfigMap"));
@@ -88,7 +89,7 @@ class VolumeMountTest {
     void secretVolumeAndEnvAreProjectedIntoContainer() throws Exception {
         Workflow wf = YAML.readValue(
                 getClass().getResource("/examples/secrets.yaml"), Workflow.class);
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             assertThat(((PodRun) run.entrypoint()).logs(), containsString("S00perS3cretPa55word"));
         }

@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.Duration;
 
 /**
  * Verifies that a script template's {@code command} array is used as the container
@@ -64,7 +65,7 @@ class ScriptTemplateEntrypointTest {
 
         Workflow workflow = ArgoWorkflowExecutor.yamlMapper().readValue(workflowYaml, Workflow.class);
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(workflow).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(workflow).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(),
                     "script template command must override the image ENTRYPOINT, not append to it");
         }

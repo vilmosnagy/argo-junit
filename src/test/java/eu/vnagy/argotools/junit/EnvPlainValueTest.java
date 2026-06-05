@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.Duration;
 
 /**
  * Verifies that {@code env[].value} entries (plain string values, not {@code valueFrom:} refs)
@@ -66,7 +67,7 @@ class EnvPlainValueTest {
 
         Workflow workflow = ArgoWorkflowExecutor.yamlMapper().readValue(workflowYaml, Workflow.class);
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(workflow).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(workflow).execute(Duration.ofMinutes(10))) {
             assertTrue(run.succeeded(), "workflow must succeed — plain env var must reach the container");
             PodRun pod = (PodRun) run.entrypoint();
             assertEquals("hello-from-env", pod.collectedOutputParams().get("result"),

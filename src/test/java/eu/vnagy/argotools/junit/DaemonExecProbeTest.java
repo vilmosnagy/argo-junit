@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.fail;
+import java.time.Duration;
 
 class DaemonExecProbeTest {
 
@@ -80,7 +81,7 @@ class DaemonExecProbeTest {
             }
             assertThat("daemon is daemoned after gate release", daemon.daemoned(), is(true));
 
-            live.await();
+            live.await(Duration.ofMinutes(10));
 
             assertThat(live.succeeded(), is(true));
             assertThat("daemon stopped after workflow completion", daemon.isDaemonStopped(), is(true));
@@ -119,7 +120,7 @@ class DaemonExecProbeTest {
                           failureThreshold: 3
                 """;
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(yaml).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(yaml).execute(Duration.ofMinutes(10))) {
             assertThat("workflow failed due to probe timeout", run.succeeded(), is(false));
             PodRun daemon = (PodRun) ((StepsRun) run.entrypoint()).get("sleepy-daemon");
             assertThat("daemon errored on probe timeout", daemon.errored(), is(true));

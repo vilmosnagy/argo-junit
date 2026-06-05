@@ -32,6 +32,7 @@ import java.nio.file.Path;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class DagTaskWhenTest {
 
@@ -42,7 +43,7 @@ class DagTaskWhenTest {
                         Workflow.class);
         setParam(wf, "mode", "a");
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
             assertThat("workflow succeeded", run.succeeded(), is(true));
 
             DagRun dag = (DagRun) run.entrypoint();

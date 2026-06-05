@@ -32,6 +32,7 @@ import java.nio.file.Path;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import java.time.Duration;
 
 class DaemonWorkflowTest {
 
@@ -41,7 +42,7 @@ class DaemonWorkflowTest {
     void executesDaemonNginx() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/daemon-nginx.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         assertThat(run.succeeded(), is(true));
 
@@ -63,7 +64,7 @@ class DaemonWorkflowTest {
     void executesDaemonStep() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/daemon-step.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         assertThat(run.succeeded(), is(true));
 

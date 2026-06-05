@@ -48,6 +48,7 @@ import java.util.List;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import java.time.Duration;
 
 class S3ArtifactTest {
 
@@ -88,7 +89,7 @@ class S3ArtifactTest {
                 getClass().getResource("/examples/output-artifact-s3.yaml"), Workflow.class);
         redirectS3(outputArtifact(wf, "message"), "output-test/message.tgz");
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
         }
         try (S3Client client = minio.createClient()) {
@@ -114,7 +115,7 @@ class S3ArtifactTest {
         wf.getSpec().getTemplates().get(0).getContainer().setImage("busybox");
         redirectS3(inputArtifact(wf, "my-art"), "input-test/my-art.tgz");
 
-        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute()) {
+        try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).withKwok(kwok).execute(Duration.ofMinutes(10))) {
             assertThat(((PodRun) run.entrypoint()).logs(), containsString("my-artifact"));
             assertThat(run.succeeded(), is(true));
         }

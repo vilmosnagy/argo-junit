@@ -27,7 +27,7 @@ spec:
         command:
           - sh
           - -c
-          - "until [ \"$(wget -qO- http://host.docker.internal:{{workflow.parameters.gate_port}}/ready 2>/dev/null)\" = OK ]; do sleep 1; done; touch /tmp/ready; tail -f /dev/null"
+          - "until [ \"$(wget -qO- http://host.testcontainers.internal:{{workflow.parameters.gate_port}}/ready 2>/dev/null)\" = OK ]; do sleep 1; done; touch /tmp/ready; tail -f /dev/null"
         readinessProbe:
           exec:
             command: [test, -f, /tmp/ready]

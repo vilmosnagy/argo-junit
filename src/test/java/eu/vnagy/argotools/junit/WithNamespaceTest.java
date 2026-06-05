@@ -32,6 +32,7 @@ import java.nio.file.Path;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class WithNamespaceTest {
 
@@ -67,7 +68,7 @@ class WithNamespaceTest {
                 .create();
 
         executor.withNamespace(customNs);
-        try (WorkflowRun run = executor.execute()) {
+        try (WorkflowRun run = executor.execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
             assertThat(run.entrypoint(), instanceOf(PodRun.class));
             assertThat(((PodRun) run.entrypoint()).logs().strip(), is("custom namespace value"));

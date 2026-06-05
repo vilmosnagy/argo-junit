@@ -65,4 +65,4 @@ spec:
         command:
           - sh
           - "-c"
-          - "until curl -sf http://host.docker.internal:{{workflow.parameters.release_port}}/ready; do sleep 1; done"
+          - "until curl -sf http://host.testcontainers.internal:{{workflow.parameters.release_port}}/ready; do sleep 1; done"

@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 /**
  * Verifies that {@code spec.retryStrategy} is honoured as a workflow-wide retry default
@@ -53,7 +54,7 @@ class SpecRetryStrategyTest {
                     .findFirst().orElseThrow()
                     .setValue(String.valueOf(gate.port()));
 
-            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute()) {
+            try (WorkflowRun run = ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10))) {
                 assertThat("workflow succeeded via spec.retryStrategy", run.succeeded(), is(true));
                 assertThat("3 attempts (spec.retryStrategy limit covers 2 retries)",
                         ((PodRun) run.entrypoint()).attempts(), is(3));

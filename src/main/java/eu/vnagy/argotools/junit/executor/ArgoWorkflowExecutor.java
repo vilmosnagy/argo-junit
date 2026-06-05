@@ -43,6 +43,7 @@ import org.testcontainers.containers.Network;
 
 import java.io.IOException;
 import java.net.URI;
+import java.time.Duration;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -110,12 +111,11 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
     private KubernetesClient k8sClient;
     private String podKubeconfig;
 
-    // Docker network for step-container connectivity — always resolved before execution
+    // Docker network for step-container connectivity — null unless kwok is in play
     private Network network;
 
     // Resources owned by this executor; closed by close(), null when externally supplied
     private KwokContainer ownedKwok;
-    private Network ownedNetwork;
 
     private volatile boolean closed = false;
 
@@ -340,7 +340,7 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
 
         ExecutionContext ctx = ExecutionContext.builder(templateMap, workflowParams, threadPool)
                 .k8sClient(k8sClient)
-                .dockerNetwork(resolveNetwork())
+                .dockerNetwork(network)
                 .podKubeconfig(podKubeconfig)
                 .namespace(namespace)
                 .artifactDrivers(drivers)
@@ -375,6 +375,20 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         return executeAsync().await();
     }
 
+    /**
+     * Executes the workflow and blocks until it completes or {@code timeout} elapses.
+     *
+     * <p>Equivalent to {@code executeAsync().await(timeout)}.
+     *
+     * @param timeout maximum time to wait for the workflow to finish
+     * @return the completed {@link WorkflowRun}
+     * @throws AssertionError if the workflow does not finish within {@code timeout}
+     * @throws Exception if the workflow execution throws an unexpected error
+     */
+    public WorkflowRun execute(Duration timeout) throws Exception {
+        return executeAsync().await(timeout);
+    }
+
     // -------------------------------------------------------------------------
     // Lifecycle
     // -------------------------------------------------------------------------
@@ -395,26 +409,11 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         if (ownedKwok != null) {
             try { ownedKwok.stop(); } catch (Exception e) { log.warn("Failed to stop kwok", e); }
         }
-        if (ownedNetwork != null) {
-            try { ownedNetwork.close(); } catch (Exception e) { log.warn("Failed to close network", e); }
-        }
     }
 
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
-
-    /**
-     * Returns the active Docker network, creating and owning a new one if none was
-     * supplied via {@link #withKwok}, {@link #withNetwork}, or {@link #getKubernetesClient}.
-     */
-    private synchronized Network resolveNetwork() {
-        if (network == null) {
-            ownedNetwork = Network.newNetwork();
-            network = ownedNetwork;
-        }
-        return network;
-    }
 
     /**
      * Fetches all WorkflowTemplates transitively reachable from {@code entrypointName} and

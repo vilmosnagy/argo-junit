@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class UnlimitedRetryTest {
 
@@ -40,7 +41,7 @@ class UnlimitedRetryTest {
     void templateDefaultsLimitActsAsSafetyNet() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/unlimited-retry.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow failed", run.failed(), is(true));
 

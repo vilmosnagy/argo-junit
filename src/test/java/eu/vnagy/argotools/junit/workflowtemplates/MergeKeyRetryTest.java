@@ -35,6 +35,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 /**
  * Reproduces the two-part retry bug when a WorkflowTemplate uses a YAML merge key
@@ -77,7 +78,7 @@ class MergeKeyRetryTest {
 
         try (WorkflowRun run = ArgoWorkflowExecutor.from(workflowPath)
                 .withKwok(argoKwok.container())
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow failed", run.failed(), is(true));
 

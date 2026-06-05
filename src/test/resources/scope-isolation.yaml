@@ -85,4 +85,4 @@ spec:
         command:
           - sh
           - "-c"
-          - "until curl -sf http://host.docker.internal:{{inputs.parameters.port}}/ready; do sleep 1; done"
+          - "until curl -sf http://host.testcontainers.internal:{{inputs.parameters.port}}/ready; do sleep 1; done"

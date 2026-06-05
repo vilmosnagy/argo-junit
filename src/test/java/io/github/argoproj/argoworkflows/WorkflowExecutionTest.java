@@ -34,6 +34,7 @@ import java.util.Optional;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import java.time.Duration;
 
 class WorkflowExecutionTest {
 
@@ -41,7 +42,7 @@ class WorkflowExecutionTest {
     void executesHelloWorld() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/hello-world.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         assertThat(run.succeeded(), is(true));
 
@@ -55,7 +56,7 @@ class WorkflowExecutionTest {
     void executesCoinflip() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/coinflip.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         assertThat(run.succeeded(), is(true));
 
@@ -85,7 +86,7 @@ class WorkflowExecutionTest {
     void executesDagDiamond() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/dag-diamond.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         assertThat(run.succeeded(), is(true));
 

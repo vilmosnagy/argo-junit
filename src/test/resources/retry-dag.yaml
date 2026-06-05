@@ -23,7 +23,7 @@ spec:
       args:
       - |
         while true; do
-          RESULT=$(wget -qO- http://host.docker.internal:{{workflow.parameters.port}}/outcome 2>/dev/null)
+          RESULT=$(wget -qO- http://host.testcontainers.internal:{{workflow.parameters.port}}/outcome 2>/dev/null)
           case "$RESULT" in
             succeed) exit 0 ;;
             fail) exit 1 ;;

@@ -30,6 +30,7 @@ import java.nio.file.Path;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 /**
  * Verifies that the diamond-coinflip DAG runs to completion.
@@ -52,7 +53,7 @@ class DagCoinflipTest {
     void diamondWithRecursiveCoinflip() throws Exception {
         WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/examples/dag-coinflip.yaml").toURI()))
-                .execute();
+                .execute(Duration.ofMinutes(10));
 
         assertThat(run.succeeded(), is(true));
 

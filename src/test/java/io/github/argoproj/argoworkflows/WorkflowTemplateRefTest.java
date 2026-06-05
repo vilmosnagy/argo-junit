@@ -34,6 +34,7 @@ import java.nio.file.Path;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 /**
  * Runs upstream Argo workflow-template example workflows through the argo-junit executor,
@@ -66,28 +67,28 @@ public class WorkflowTemplateRefTest {
 
     @Test
     void helloWorldViaTemplateRef() throws Exception {
-        try (WorkflowRun run = executorFor("hello-world.yaml").execute()) {
+        try (WorkflowRun run = executorFor("hello-world.yaml").execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
         }
     }
 
     @Test
     void stepsViaTemplateRef() throws Exception {
-        try (WorkflowRun run = executorFor("steps.yaml").execute()) {
+        try (WorkflowRun run = executorFor("steps.yaml").execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
         }
     }
 
     @Test
     void dagDiamondViaTemplateRef() throws Exception {
-        try (WorkflowRun run = executorFor("dag.yaml").execute()) {
+        try (WorkflowRun run = executorFor("dag.yaml").execute(Duration.ofMinutes(10))) {
             assertThat(run.succeeded(), is(true));
         }
     }
 
     @Test
     void retryWithStepsViaTemplateRef() throws Exception {
-        try (WorkflowRun run = executorFor("retry-with-steps.yaml").execute()) {
+        try (WorkflowRun run = executorFor("retry-with-steps.yaml").execute(Duration.ofMinutes(10))) {
             if (!run.succeeded()) {
                 // Each step retries up to 10 times (limit: 10 in the templateRef), so any step
                 // that failed must have exhausted all 11 attempts before giving up.

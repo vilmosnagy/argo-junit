@@ -41,6 +41,7 @@ import java.util.function.BiFunction;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.fail;
+import java.time.Duration;
 
 class DaemonLifecycleTest {
 
@@ -84,7 +85,7 @@ class DaemonLifecycleTest {
             assertThat("daemon stopped before wait started", daemon.isDaemonStopped(), is(true));
 
             gate.release();
-            live.await();
+            live.await(Duration.ofMinutes(10));
 
             assertThat("workflow succeeded", live.succeeded(), is(true));
 

@@ -32,6 +32,7 @@ import java.nio.file.Path;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 class ArtifactPassingTest {
 
@@ -39,7 +40,7 @@ class ArtifactPassingTest {
     void fileArtifactPassedBetweenDagTasks() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/artifact-dag.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow succeeded", run.succeeded(), is(true));
 
@@ -61,7 +62,7 @@ class ArtifactPassingTest {
     void directoryArtifactPassedBetweenSteps() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/artifact-dir-steps.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow succeeded", run.succeeded(), is(true));
 
@@ -85,7 +86,7 @@ class ArtifactPassingTest {
     void directoryArtifactPassedBetweenDagTasks() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/artifact-dir-dag.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow succeeded", run.succeeded(), is(true));
 
@@ -109,7 +110,7 @@ class ArtifactPassingTest {
     void artifactPassedThroughIntermediateDag() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/artifact-dag-passthrough.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow succeeded", run.succeeded(), is(true));
 
@@ -131,7 +132,7 @@ class ArtifactPassingTest {
     void artifactPassedThroughIntermediateSteps() throws Exception {
         try (WorkflowRun run = ArgoWorkflowExecutor
                 .from(Path.of(getClass().getResource("/artifact-steps-passthrough.yaml").toURI()))
-                .execute()) {
+                .execute(Duration.ofMinutes(10))) {
 
             assertThat("workflow succeeded", run.succeeded(), is(true));
 

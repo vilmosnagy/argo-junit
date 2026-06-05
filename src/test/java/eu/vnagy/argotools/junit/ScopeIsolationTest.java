@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Test;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.fail;
+import java.time.Duration;
 
 /**
  * Verifies that step outputs ({{steps.X.outputs.result}}) are scoped to the
@@ -99,7 +100,7 @@ class ScopeIsolationTest {
             // Fix: gets "hello-from-child1" (each sub-workflow has its own scope).
             gate1.release();
 
-            live.await();
+            live.await(Duration.ofMinutes(10));
             assertThat("workflow succeeded", live.succeeded(), is(true));
 
             PodRun consumer1 = (PodRun) child1.get("consumer1");

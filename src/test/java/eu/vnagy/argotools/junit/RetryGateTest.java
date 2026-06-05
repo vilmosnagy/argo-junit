@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import java.time.Duration;
 
 /**
  * Deterministic retry tests driven by {@link RetryOutcomeGate}.
@@ -121,6 +122,6 @@ class RetryGateTest {
                 .filter(p -> "port".equals(p.getName()))
                 .findFirst().orElseThrow()
                 .setValue(String.valueOf(gate.port()));
-        return ArgoWorkflowExecutor.from(wf).execute();
+        return ArgoWorkflowExecutor.from(wf).execute(Duration.ofMinutes(10));
     }
 }

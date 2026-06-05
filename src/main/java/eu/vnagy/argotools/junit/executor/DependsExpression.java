@@ -42,9 +42,9 @@ import java.util.regex.Pattern;
  *
  * <p>Examples:
  * <pre>
- *   A && B
+ *   A &amp;&amp; B
  *   A || B
- *   A && (C.Succeeded || C.Failed)
+ *   A &amp;&amp; (C.Succeeded || C.Failed)
  *   should-execute-2.Succeeded || should-not-execute
  * </pre>
  */

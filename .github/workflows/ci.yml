@@ -25,6 +25,8 @@ jobs:
           chmod +x /usr/local/bin/argo
       - name: Build
         run: mvn --batch-mode --update-snapshots verify
+      - name: Check Javadoc
+        run: mvn --batch-mode javadoc:javadoc
       - name: Upload JaCoCo Coverage Report as an artifact
         uses: actions/upload-artifact@v7
         with:

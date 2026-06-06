@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: dag-default-keyword-param-
+spec:
+  entrypoint: main
+  templates:
+
+  - name: main
+    dag:
+      tasks:
+      - name: run
+        template: formatter
+        arguments:
+          parameters:
+            - name: items
+              value: "a b c"
+          # separator intentionally omitted — should use template `default:` key
+
+  - name: formatter
+    inputs:
+      parameters:
+        - name: items
+        - name: separator
+          default: ", "
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["echo '{{inputs.parameters.items}}' | sed 's/ /{{inputs.parameters.separator}}/g'"]

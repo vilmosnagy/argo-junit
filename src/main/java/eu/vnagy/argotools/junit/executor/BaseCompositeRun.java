@@ -246,8 +246,10 @@ abstract class BaseCompositeRun {
         if (target == null || target.getInputs() == null
                 || target.getInputs().getParameters() == null) return;
         for (Parameter p : target.getInputs().getParameters()) {
-            if (!resolvedArgs.containsKey(p.getName()) && p.getValue() != null) {
-                resolvedArgs.put(p.getName(), ctx.substitute(p.getValue(), inputParams));
+            if (resolvedArgs.containsKey(p.getName())) continue;
+            String fallback = p.getValue() != null ? p.getValue() : p.getDefault();
+            if (fallback != null) {
+                resolvedArgs.put(p.getName(), ctx.substitute(fallback, inputParams));
             }
         }
     }

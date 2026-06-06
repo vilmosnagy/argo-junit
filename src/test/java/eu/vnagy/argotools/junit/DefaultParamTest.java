@@ -67,4 +67,40 @@ class DefaultParamTest {
                     runner.logs().trim(), containsString("a, b, c"));
         }
     }
+
+    // Argo appears to treat `value:` and `default:` identically for template input parameters —
+    // both act as the fallback when the caller omits the argument. We haven't verified this
+    // in the Argo source, but it is consistent with what we observe in production workflows.
+
+    @Test
+    void dagMissingParameterFallsBackToTemplateDefaultKeyword() throws Exception {
+        try (WorkflowRun run = ArgoWorkflowExecutor
+                .from(Path.of(getClass().getResource("/dag-default-keyword-param.yaml").toURI()))
+                .execute(Duration.ofMinutes(10))) {
+
+            assertThat("workflow succeeded", run.succeeded(), is(true));
+
+            DagRun dag = (DagRun) run.entrypoint();
+            PodRun runner = (PodRun) dag.get("run");
+            assertThat("runner succeeded", runner.succeeded(), is(true));
+            assertThat("output uses default: keyword separator",
+                    runner.logs().trim(), containsString("a, b, c"));
+        }
+    }
+
+    @Test
+    void stepsMissingParameterFallsBackToTemplateDefaultKeyword() throws Exception {
+        try (WorkflowRun run = ArgoWorkflowExecutor
+                .from(Path.of(getClass().getResource("/steps-default-keyword-param.yaml").toURI()))
+                .execute(Duration.ofMinutes(10))) {
+
+            assertThat("workflow succeeded", run.succeeded(), is(true));
+
+            StepsRun steps = (StepsRun) run.entrypoint();
+            PodRun runner = (PodRun) steps.get("run");
+            assertThat("runner succeeded", runner.succeeded(), is(true));
+            assertThat("output uses default: keyword separator",
+                    runner.logs().trim(), containsString("a, b, c"));
+        }
+    }
 }

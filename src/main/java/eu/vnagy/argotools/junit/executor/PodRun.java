@@ -334,7 +334,7 @@ public final class PodRun implements WorkflowNode {
 
         while (true) {
             this.attempts++;
-            runAttempt(ctx, resolvedImage, resolvedCommand, resolvedContainerArgs, resolvedScript, effectiveInputs, resolvedEnv, materializedVolumes);
+            runAttempt(ctx, inputParams, resolvedImage, resolvedCommand, resolvedContainerArgs, resolvedScript, effectiveInputs, resolvedEnv, materializedVolumes);
 
             if (!retry.shouldRetry(status == Status.FAILED, status == Status.ERRORED, this.attempts)) break;
             if (!retry.withinMaxDuration(retryStart)) {
@@ -439,7 +439,8 @@ public final class PodRun implements WorkflowNode {
         }
     }
 
-    private void runAttempt(ExecutionContext ctx, String resolvedImage,
+    private void runAttempt(ExecutionContext ctx, Map<String, String> inputParams,
+                            String resolvedImage,
                             List<String> resolvedCommand, List<String> resolvedContainerArgs,
                             String resolvedScript,
                             Map<String, Path> effectiveInputs,
@@ -575,22 +576,23 @@ public final class PodRun implements WorkflowNode {
         // Bind-mount volumes
         Map<String, IoK8sApiCoreV1Volume> vols = effectiveVolumes(ctx);
         for (VolumeMountSpec mount : volumeMountSpecs) {
-            IoK8sApiCoreV1Volume vol = vols.get(mount.volumeName());
+            String resolvedVolName = ctx.substitute(mount.volumeName(), inputParams);
+            IoK8sApiCoreV1Volume vol = vols.get(resolvedVolName);
             if (vol == null) {
-                log.warn("Pod '{}': volume '{}' not found in workflow or template spec, skipping mount", name, mount.volumeName());
+                log.warn("Pod '{}': volume '{}' not found in workflow or template spec, skipping mount", name, resolvedVolName);
                 continue;
             }
             Path hostDir;
             if (vol.getEmptyDir() != null) {
-                hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + mount.volumeName() + "-");
+                hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + resolvedVolName + "-");
             } else {
-                hostDir = materializedVolumes.get(mount.volumeName());
+                hostDir = materializedVolumes.get(resolvedVolName);
                 if (hostDir == null) continue;
             }
             Path mountSrc = mount.subPath() != null ? hostDir.resolve(mount.subPath()) : hostDir;
             BindMode mode = mount.readOnly() ? BindMode.READ_ONLY : BindMode.READ_WRITE;
             cont.withFileSystemBind(mountSrc.toString(), mount.mountPath(), mode);
-            log.debug("Pod '{}': volume '{}' bound '{}' → '{}'", name, mount.volumeName(), mountSrc, mount.mountPath());
+            log.debug("Pod '{}': volume '{}' bound '{}' → '{}'", name, resolvedVolName, mountSrc, mount.mountPath());
         }
 
         this.status = Status.RUNNING;
@@ -650,10 +652,11 @@ public final class PodRun implements WorkflowNode {
         if (vols.isEmpty()) return Map.of();
         Map<String, Path> result = new LinkedHashMap<>();
         for (VolumeMountSpec mount : volumeMountSpecs) {
-            if (result.containsKey(mount.volumeName())) continue;
-            IoK8sApiCoreV1Volume vol = vols.get(mount.volumeName());
+            String resolvedVolName = ctx.substitute(mount.volumeName(), inputParams);
+            if (result.containsKey(resolvedVolName)) continue;
+            IoK8sApiCoreV1Volume vol = vols.get(resolvedVolName);
             if (vol == null || vol.getEmptyDir() != null) continue; // emptyDir is created fresh per attempt
-            Path hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + mount.volumeName() + "-");
+            Path hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + resolvedVolName + "-");
             if (vol.getConfigMap() != null) {
                 String cmName = ctx.substitute(vol.getConfigMap().getName(), inputParams);
                 populateFromConfigMap(hostDir, cmName, vol.getConfigMap().getItems(), ctx);
@@ -661,10 +664,10 @@ public final class PodRun implements WorkflowNode {
                 String secretName = ctx.substitute(vol.getSecret().getSecretName(), inputParams);
                 populateFromSecret(hostDir, secretName, vol.getSecret().getItems(), ctx);
             } else {
-                log.warn("Pod '{}': unsupported volume type for '{}', skipping", name, mount.volumeName());
+                log.warn("Pod '{}': unsupported volume type for '{}', skipping", name, resolvedVolName);
                 continue;
             }
-            result.put(mount.volumeName(), hostDir);
+            result.put(resolvedVolName, hostDir);
         }
         return Map.copyOf(result);
     }

@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: vol-name-expr-container-
+spec:
+  entrypoint: main
+  volumes:
+    - name: config-vol
+      configMap:
+        name: vol-name-expr-config
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: run
+            template: worker
+            arguments:
+              parameters:
+                - name: vol-name
+                  value: config-vol
+
+    - name: worker
+      inputs:
+        parameters:
+          - name: vol-name
+      container:
+        image: busybox
+        command: [sh, -c, "cat /etc/config/value.txt"]
+        volumeMounts:
+          - name: "{{inputs.parameters.vol-name}}"
+            mountPath: /etc/config

@@ -1,0 +1,69 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: output-artifact-extract-
+spec:
+  entrypoint: main
+  templates:
+  - name: main
+    dag:
+      tasks:
+      - name: create-data
+        template: creator
+      # Input and output artifact share the same /data path.
+      # The executor bind-mounts the upstream directory at /data, then extractArtifact
+      # archives that bind-mounted path for the output — entries may include leading ./.
+      - name: check-data
+        template: checker
+        depends: create-data
+        arguments:
+          artifacts:
+          - name: gtfs-data
+            from: "{{tasks.create-data.outputs.artifacts.gtfs-data}}"
+      - name: verify-data
+        template: verifier
+        depends: check-data
+        arguments:
+          artifacts:
+          - name: gtfs-data
+            from: "{{tasks.check-data.outputs.artifacts.gtfs-data}}"
+
+  - name: creator
+    script:
+      image: busybox
+      command: [sh]
+      source: |
+        mkdir -p /data
+        echo 'artifact-content' > /data/output.txt
+        touch /data/.dir-archive
+    outputs:
+      artifacts:
+      - name: gtfs-data
+        path: /data
+
+  # Input and output at /data, script only reads — does not recreate the directory.
+  - name: checker
+    inputs:
+      artifacts:
+      - name: gtfs-data
+        path: /data
+    script:
+      image: busybox
+      command: [sh]
+      source: |
+        ls -la /data
+        test -s /data/output.txt
+    outputs:
+      artifacts:
+      - name: gtfs-data
+        path: /data
+
+  - name: verifier
+    inputs:
+      artifacts:
+      - name: gtfs-data
+        path: /data
+    container:
+      image: busybox
+      command: [sh, -c]
+      args: ["cat /data/output.txt"]

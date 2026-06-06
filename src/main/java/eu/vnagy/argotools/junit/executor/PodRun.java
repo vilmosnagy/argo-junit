@@ -764,7 +764,11 @@ public final class PodRun implements WorkflowNode {
              TarArchiveInputStream tarInput = new TarArchiveInputStream(tarStream)) {
             TarArchiveEntry entry;
             while ((entry = tarInput.getNextTarEntry()) != null) {
-                Path target = tempDir.resolve(entry.getName());
+                String entryName = entry.getName().replaceFirst("^[./]+", "");
+                if (entryName.isEmpty()) continue;
+                Path target = tempDir.resolve(entryName).normalize();
+                if (!target.startsWith(tempDir))
+                    throw new IllegalStateException("Tar path traversal detected: " + entry.getName());
                 if (entry.isDirectory()) {
                     Files.createDirectories(target);
                 } else {
@@ -774,9 +778,12 @@ public final class PodRun implements WorkflowNode {
             }
         }
         try (var ls = Files.list(tempDir)) {
-            return ls.findFirst()
-                    .orElseThrow(() -> new IllegalStateException(
-                            "No content extracted for artifact '" + spec.name() + "' from '" + spec.path() + "'"));
+            List<Path> topLevel = ls.toList();
+            if (topLevel.isEmpty()) throw new IllegalStateException(
+                    "No content extracted for artifact '" + spec.name() + "' from '" + spec.path() + "'");
+            // When the runtime strips the parent directory from the archive (e.g. for bind-mounted
+            // paths), all files land flat in tempDir. Return tempDir itself so callers see a directory.
+            return topLevel.size() == 1 ? topLevel.get(0) : tempDir;
         }
     }
 

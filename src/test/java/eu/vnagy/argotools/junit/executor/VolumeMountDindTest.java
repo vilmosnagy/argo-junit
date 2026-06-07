@@ -33,8 +33,6 @@ import org.testcontainers.utility.DockerImageName;
 import java.net.URI;
 import java.time.Duration;
 
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-
 /**
  * Runs the ConfigMap and Secret volume-mount scenarios through a Docker-in-Docker (DinD) daemon.
  *
@@ -49,7 +47,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * <p><b>Requirements:</b> privileged containers must be available. Works with rootful Docker or
  * rootful Podman. Rootless Podman cannot grant the kernel capabilities needed to run a nested
- * Docker daemon; the tests skip automatically in that case.
+ * Docker daemon; the tests fail if DinD cannot start.
  */
 class VolumeMountDindTest extends VolumeMountBase {
 
@@ -64,14 +62,7 @@ class VolumeMountDindTest extends VolumeMountBase {
                 .withExposedPorts(2375)
                 .waitingFor(Wait.forLogMessage(".*API listen on.*", 1)
                         .withStartupTimeout(Duration.ofMinutes(2)));
-        try {
-            dind.start();
-        } catch (Exception e) {
-            assumeTrue(false,
-                    "Skipped: cannot start DinD (needs rootful Docker / rootful Podman with --privileged): "
-                            + e.getMessage());
-            return;
-        }
+        dind.start();
 
         dindClient = DockerClientProviderStrategy.getClientForConfig(
                 TransportConfig.builder()
@@ -89,7 +80,6 @@ class VolumeMountDindTest extends VolumeMountBase {
 
     @Override
     protected ArgoWorkflowExecutor configure(ArgoWorkflowExecutor executor) {
-        assumeTrue(dindClient != null, "DinD unavailable — skipped by setUpDind");
         return executor.withDockerClient(dindClient);
     }
 }

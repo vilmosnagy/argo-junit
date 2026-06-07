@@ -448,8 +448,8 @@ public final class PodRun implements WorkflowNode {
                             Map<String, String> resolvedEnv,
                             Map<String, Path> materializedVolumes) throws Exception {
         @SuppressWarnings("resource")
-        GenericContainer<?> cont = ctx.dockerClient != null
-                ? new PinnedClientContainer(DockerImageName.parse(resolvedImage), ctx.dockerClient)
+        GenericContainer<?> cont = ctx.containerFactory != null
+                ? ctx.containerFactory.apply(DockerImageName.parse(resolvedImage))
                 : new GenericContainer<>(DockerImageName.parse(resolvedImage));
         if (resolvedScript != null) {
             // Script template: override the image ENTRYPOINT with the template's command array
@@ -475,7 +475,7 @@ public final class PodRun implements WorkflowNode {
         // Join the kwok Docker network so the container can reach the API server by hostname.
         // Skip when running against a remote daemon: the network object belongs to the host daemon
         // and its ID does not exist on the remote one.
-        if (ctx.dockerNetwork != null && ctx.dockerClient == null) {
+        if (ctx.dockerNetwork != null && ctx.containerFactory == null) {
             cont.withNetwork(ctx.dockerNetwork);
         }
 
@@ -829,11 +829,4 @@ public final class PodRun implements WorkflowNode {
     public GenericContainer<?> container() { return container; }
     public Duration duration()             { return duration; }
 
-    /** Allows a specific DockerClient to be injected so containers run against a chosen daemon. */
-    private static final class PinnedClientContainer extends GenericContainer<PinnedClientContainer> {
-        PinnedClientContainer(DockerImageName image, DockerClient client) {
-            super(image);
-            this.dockerClient = client; // protected field in GenericContainer
-        }
-    }
 }

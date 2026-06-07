@@ -22,6 +22,7 @@ package eu.vnagy.argotools.junit.executor;
 
 import com.github.dockerjava.api.DockerClient;
 import eu.vnagy.argotools.junit.S3DirectoryArtifactBase;
+import eu.vnagy.argotools.junit.testutil.DindContainerFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.testcontainers.containers.GenericContainer;
@@ -87,6 +88,6 @@ class S3DirectoryArtifactDindTest extends S3DirectoryArtifactBase {
      */
     @Override
     protected ArgoWorkflowExecutor configure(ArgoWorkflowExecutor executor) {
-        return executor.withDockerClient(dindClient);
+        return executor.withContainerFactory(DindContainerFactory.forClient(dindClient));
     }
 }

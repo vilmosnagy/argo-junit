@@ -29,6 +29,7 @@ import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1VolumeMount;
 import eu.vnagy.argotools.junit.model.Parameter;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
+import com.github.dockerjava.api.DockerClient;
 import org.testcontainers.containers.BindMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -447,7 +448,9 @@ public final class PodRun implements WorkflowNode {
                             Map<String, String> resolvedEnv,
                             Map<String, Path> materializedVolumes) throws Exception {
         @SuppressWarnings("resource")
-        GenericContainer<?> cont = new GenericContainer<>(DockerImageName.parse(resolvedImage));
+        GenericContainer<?> cont = ctx.dockerClient != null
+                ? new PinnedClientContainer(DockerImageName.parse(resolvedImage), ctx.dockerClient)
+                : new GenericContainer<>(DockerImageName.parse(resolvedImage));
         if (resolvedScript != null) {
             // Script template: override the image ENTRYPOINT with the template's command array
             // so that a baked-in ENTRYPOINT does not prepend itself to the invocation.
@@ -469,8 +472,10 @@ public final class PodRun implements WorkflowNode {
             }
         }
 
-        // Join the kwok Docker network so the container can reach the API server by hostname
-        if (ctx.dockerNetwork != null) {
+        // Join the kwok Docker network so the container can reach the API server by hostname.
+        // Skip when running against a remote daemon: the network object belongs to the host daemon
+        // and its ID does not exist on the remote one.
+        if (ctx.dockerNetwork != null && ctx.dockerClient == null) {
             cont.withNetwork(ctx.dockerNetwork);
         }
 
@@ -823,4 +828,12 @@ public final class PodRun implements WorkflowNode {
     /** The stopped container. Logs and state remain accessible until Ryuk removes it. */
     public GenericContainer<?> container() { return container; }
     public Duration duration()             { return duration; }
+
+    /** Allows a specific DockerClient to be injected so containers run against a chosen daemon. */
+    private static final class PinnedClientContainer extends GenericContainer<PinnedClientContainer> {
+        PinnedClientContainer(DockerImageName image, DockerClient client) {
+            super(image);
+            this.dockerClient = client; // protected field in GenericContainer
+        }
+    }
 }

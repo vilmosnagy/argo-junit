@@ -22,6 +22,7 @@ package eu.vnagy.argotools.junit.executor;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.dockerjava.api.DockerClient;
 import com.fasterxml.jackson.dataformat.yaml.YAMLAnchorReplayingFactory;
 import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
@@ -113,6 +114,9 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
 
     // Docker network for step-container connectivity — null unless kwok is in play
     private Network network;
+
+    // nullable — when set, step containers run against this daemon instead of the Testcontainers default
+    private DockerClient dockerClient = null;
 
     // Resources owned by this executor; closed by close(), null when externally supplied
     private KwokContainer ownedKwok;
@@ -244,6 +248,24 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
     }
 
     /**
+     * Directs step containers to a specific Docker daemon instead of the Testcontainers default.
+     *
+     * <p><b>Package-private — not part of the public library API.</b> Intended for tests that need
+     * to verify behaviour when the JVM and the Docker daemon do not share a filesystem (e.g. DinD).
+     *
+     * <p>Use {@link org.testcontainers.dockerclient.DockerClientProviderStrategy#getClientForConfig}
+     * with a {@link org.testcontainers.dockerclient.TransportConfig} pointing at the target daemon
+     * to build the client.
+     *
+     * @param dockerClient a docker-java client connected to the target daemon
+     * @return this executor, for chaining
+     */
+    ArgoWorkflowExecutor withDockerClient(DockerClient dockerClient) {
+        this.dockerClient = dockerClient;
+        return this;
+    }
+
+    /**
      * Lazily starts a kwok cluster owned by this executor and returns a fabric8
      * {@link KubernetesClient} connected to it.
      *
@@ -346,6 +368,7 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 .artifactDrivers(drivers)
                 .volumes(volumes)
                 .defaultRetryStrategy(defaultRetryStrategy)
+                .dockerClient(dockerClient)
                 .build();
 
         // Download workflow-level HTTP input artifacts before execution starts

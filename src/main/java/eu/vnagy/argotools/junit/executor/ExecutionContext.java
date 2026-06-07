@@ -27,6 +27,7 @@ import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Volume;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.S3Artifact;
 import eu.vnagy.argotools.junit.model.Template;
+import com.github.dockerjava.api.DockerClient;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -105,6 +106,8 @@ final class ExecutionContext {
     final Map<String, IoK8sApiCoreV1Volume> volumes;
     // nullable — retryStrategy from spec.templateDefaults, used when a template has no own retryStrategy
     final RetryStrategy defaultRetryStrategy;
+    // nullable — when set, step containers are started against this daemon instead of the Testcontainers default
+    final DockerClient dockerClient;
 
     private ExecutionContext(Builder b) {
         this.templateMap = b.templateMap;
@@ -127,6 +130,7 @@ final class ExecutionContext {
         this.artifactDrivers = b.artifactDrivers;
         this.volumes = b.volumes;
         this.defaultRetryStrategy = b.defaultRetryStrategy;
+        this.dockerClient = b.dockerClient;
     }
 
     static Builder builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
@@ -154,6 +158,7 @@ final class ExecutionContext {
         b.artifactDrivers = artifactDrivers;
         b.volumes = volumes;
         b.defaultRetryStrategy = defaultRetryStrategy;
+        b.dockerClient = dockerClient;
         return b;
     }
 
@@ -168,6 +173,7 @@ final class ExecutionContext {
                 .tmpDir(tmpDir)
                 .volumes(volumes)
                 .defaultRetryStrategy(defaultRetryStrategy)
+                .dockerClient(dockerClient)
                 .inputArtifacts(inputArtifacts)
                 .build();
     }
@@ -369,6 +375,7 @@ final class ExecutionContext {
         private List<ArtifactDriver> artifactDrivers = List.of();
         private Map<String, IoK8sApiCoreV1Volume> volumes = Map.of();
         private RetryStrategy defaultRetryStrategy = null;
+        private DockerClient dockerClient = null;
 
         private Builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
                         ExecutorService threadPool) {
@@ -396,6 +403,7 @@ final class ExecutionContext {
             return this;
         }
         Builder defaultRetryStrategy(RetryStrategy v) { this.defaultRetryStrategy = v; return this; }
+        Builder dockerClient(DockerClient v)           { this.dockerClient = v; return this; }
 
         ExecutionContext build() { return new ExecutionContext(this); }
     }

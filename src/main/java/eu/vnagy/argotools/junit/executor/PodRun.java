@@ -568,7 +568,7 @@ public final class PodRun implements WorkflowNode {
                 log.debug("Pod '{}': injecting input artifact '{}' at '{}' mode={}",
                         name, decl.name(), decl.path(), decl.mode());
                 if (Files.isDirectory(hostPath)) {
-                    cont.withFileSystemBind(hostPath.toString(), decl.path(), BindMode.READ_WRITE);
+                    cont.withCopyFileToContainer(MountableFile.forHostPath(hostPath.toString()), decl.path());
                 } else {
                     MountableFile mf = decl.mode() != null
                             ? MountableFile.forHostPath(hostPath, decl.mode())
@@ -587,17 +587,17 @@ public final class PodRun implements WorkflowNode {
                 log.warn("Pod '{}': volume '{}' not found in workflow or template spec, skipping mount", name, resolvedVolName);
                 continue;
             }
-            Path hostDir;
             if (vol.getEmptyDir() != null) {
-                hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + resolvedVolName + "-");
+                Path hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + resolvedVolName + "-");
+                cont.withFileSystemBind(hostDir.toString(), mount.mountPath(), BindMode.READ_WRITE);
+                log.debug("Pod '{}': emptyDir volume '{}' bound '{}' → '{}'", name, resolvedVolName, hostDir, mount.mountPath());
             } else {
-                hostDir = materializedVolumes.get(resolvedVolName);
+                Path hostDir = materializedVolumes.get(resolvedVolName);
                 if (hostDir == null) continue;
+                Path mountSrc = mount.subPath() != null ? hostDir.resolve(mount.subPath()) : hostDir;
+                cont.withCopyFileToContainer(MountableFile.forHostPath(mountSrc.toString()), mount.mountPath());
+                log.debug("Pod '{}': volume '{}' copied '{}' → '{}'", name, resolvedVolName, mountSrc, mount.mountPath());
             }
-            Path mountSrc = mount.subPath() != null ? hostDir.resolve(mount.subPath()) : hostDir;
-            BindMode mode = mount.readOnly() ? BindMode.READ_ONLY : BindMode.READ_WRITE;
-            cont.withFileSystemBind(mountSrc.toString(), mount.mountPath(), mode);
-            log.debug("Pod '{}': volume '{}' bound '{}' → '{}'", name, resolvedVolName, mountSrc, mount.mountPath());
         }
 
         this.status = Status.RUNNING;

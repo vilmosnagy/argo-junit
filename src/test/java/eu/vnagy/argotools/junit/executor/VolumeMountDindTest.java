@@ -25,6 +25,7 @@ import eu.vnagy.argotools.junit.VolumeMountBase;
 import eu.vnagy.argotools.junit.testutil.DindContainerFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.dockerclient.DockerClientProviderStrategy;
@@ -50,6 +51,7 @@ import java.time.Duration;
  * rootful Podman. Rootless Podman cannot grant the kernel capabilities needed to run a nested
  * Docker daemon; the tests fail if DinD cannot start.
  */
+@DisabledIfEnvironmentVariable(named = "CI", matches = "true")
 class VolumeMountDindTest extends VolumeMountBase {
 
     static GenericContainer<?> dind;

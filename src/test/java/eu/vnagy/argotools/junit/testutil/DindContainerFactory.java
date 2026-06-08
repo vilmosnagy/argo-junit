@@ -22,11 +22,14 @@ package eu.vnagy.argotools.junit.testutil;
 
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.exception.NotFoundException;
+import com.github.dockerjava.api.model.Network;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
+import java.util.HashMap;
 import java.util.function.Function;
 
 /**
@@ -50,8 +53,7 @@ public final class DindContainerFactory {
      * @param dindClient a docker-java client connected to the DinD daemon
      */
     public static Function<DockerImageName, GenericContainer<?>> forClient(DockerClient dindClient) {
-        DockerClient tolerant = portForwardingTolerant(dindClient);
-        return image -> new DindContainer(image, tolerant);
+        return image -> new DindContainer(image, dindClient);
     }
 
     private static final class DindContainer extends GenericContainer<DindContainer> {
@@ -61,53 +63,4 @@ public final class DindContainerFactory {
         }
     }
 
-    /**
-     * Wraps {@code real} so that {@code inspectNetworkCmd} and {@code connectToNetworkCmd} swallow
-     * {@link NotFoundException}. This prevents {@code GenericContainer.connectToPortForwardingNetwork()}
-     * from crashing when it passes a host-daemon network ID to the remote daemon.
-     */
-    private static DockerClient portForwardingTolerant(DockerClient real) {
-        return (DockerClient) Proxy.newProxyInstance(
-                real.getClass().getClassLoader(),
-                new Class<?>[]{DockerClient.class},
-                (proxy, method, args) -> {
-                    try {
-                        Object result = method.invoke(real, args);
-                        String name = method.getName();
-                        if ("inspectNetworkCmd".equals(name) || "connectToNetworkCmd".equals(name)) {
-                            return silentOnNotFound(result, method.getReturnType());
-                        }
-                        return result;
-                    } catch (InvocationTargetException e) {
-                        throw e.getCause();
-                    }
-                });
-    }
-
-    /**
-     * Wraps {@code cmd} (an {@code InspectNetworkCmd} or {@code ConnectToNetworkCmd}) so that
-     * {@code exec()} catches {@link NotFoundException} instead of propagating it. Builder methods
-     * that return the same object are redirected back to the proxy to keep the chain intercepted.
-     */
-    private static Object silentOnNotFound(Object cmd, Class<?> iface) {
-        return Proxy.newProxyInstance(
-                iface.getClassLoader(),
-                new Class<?>[]{iface},
-                (proxy, method, args) -> {
-                    if ("exec".equals(method.getName())) {
-                        try {
-                            return method.invoke(cmd, args);
-                        } catch (InvocationTargetException e) {
-                            if (e.getCause() instanceof NotFoundException) return null;
-                            throw e.getCause();
-                        }
-                    }
-                    try {
-                        Object r = method.invoke(cmd, args);
-                        return (r == cmd) ? proxy : r; // keep builder chain on the proxy
-                    } catch (InvocationTargetException e) {
-                        throw e.getCause();
-                    }
-                });
-    }
 }

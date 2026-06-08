@@ -22,6 +22,7 @@ package eu.vnagy.argotools.junit.executor;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -98,9 +99,11 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
     // YAMLAnchorReplayingFactory (added in Jackson 2.19) replays anchor node tokens on alias
     // references, fixing both POJO-field aliases and string-field aliases transparently.
     private static final ObjectMapper YAML = new ObjectMapper(new YAMLAnchorReplayingFactory())
+            .registerModule(new JavaTimeModule())
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     private static final ObjectMapper JSON = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     public static final ResourceDefinitionContext WORKFLOW_TEMPLATE_CTX =

@@ -29,6 +29,7 @@ import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1VolumeMount;
 import eu.vnagy.argotools.junit.model.Parameter;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
+import com.github.dockerjava.api.DockerClient;
 import org.testcontainers.containers.BindMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -447,7 +448,9 @@ public final class PodRun implements WorkflowNode {
                             Map<String, String> resolvedEnv,
                             Map<String, Path> materializedVolumes) throws Exception {
         @SuppressWarnings("resource")
-        GenericContainer<?> cont = new GenericContainer<>(DockerImageName.parse(resolvedImage));
+        GenericContainer<?> cont = ctx.containerFactory != null
+                ? ctx.containerFactory.apply(DockerImageName.parse(resolvedImage))
+                : new GenericContainer<>(DockerImageName.parse(resolvedImage));
         if (resolvedScript != null) {
             // Script template: override the image ENTRYPOINT with the template's command array
             // so that a baked-in ENTRYPOINT does not prepend itself to the invocation.
@@ -469,8 +472,10 @@ public final class PodRun implements WorkflowNode {
             }
         }
 
-        // Join the kwok Docker network so the container can reach the API server by hostname
-        if (ctx.dockerNetwork != null) {
+        // Join the kwok Docker network so the container can reach the API server by hostname.
+        // Skip when running against a remote daemon: the network object belongs to the host daemon
+        // and its ID does not exist on the remote one.
+        if (ctx.dockerNetwork != null && ctx.containerFactory == null) {
             cont.withNetwork(ctx.dockerNetwork);
         }
 
@@ -563,7 +568,7 @@ public final class PodRun implements WorkflowNode {
                 log.debug("Pod '{}': injecting input artifact '{}' at '{}' mode={}",
                         name, decl.name(), decl.path(), decl.mode());
                 if (Files.isDirectory(hostPath)) {
-                    cont.withFileSystemBind(hostPath.toString(), decl.path(), BindMode.READ_WRITE);
+                    cont.withCopyFileToContainer(MountableFile.forHostPath(hostPath.toString()), decl.path());
                 } else {
                     MountableFile mf = decl.mode() != null
                             ? MountableFile.forHostPath(hostPath, decl.mode())
@@ -582,17 +587,17 @@ public final class PodRun implements WorkflowNode {
                 log.warn("Pod '{}': volume '{}' not found in workflow or template spec, skipping mount", name, resolvedVolName);
                 continue;
             }
-            Path hostDir;
             if (vol.getEmptyDir() != null) {
-                hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + resolvedVolName + "-");
+                Path hostDir = Files.createTempDirectory(ctx.tmpDir, "vol-" + resolvedVolName + "-");
+                cont.withFileSystemBind(hostDir.toString(), mount.mountPath(), BindMode.READ_WRITE);
+                log.debug("Pod '{}': emptyDir volume '{}' bound '{}' → '{}'", name, resolvedVolName, hostDir, mount.mountPath());
             } else {
-                hostDir = materializedVolumes.get(resolvedVolName);
+                Path hostDir = materializedVolumes.get(resolvedVolName);
                 if (hostDir == null) continue;
+                Path mountSrc = mount.subPath() != null ? hostDir.resolve(mount.subPath()) : hostDir;
+                cont.withCopyFileToContainer(MountableFile.forHostPath(mountSrc.toString()), mount.mountPath());
+                log.debug("Pod '{}': volume '{}' copied '{}' → '{}'", name, resolvedVolName, mountSrc, mount.mountPath());
             }
-            Path mountSrc = mount.subPath() != null ? hostDir.resolve(mount.subPath()) : hostDir;
-            BindMode mode = mount.readOnly() ? BindMode.READ_ONLY : BindMode.READ_WRITE;
-            cont.withFileSystemBind(mountSrc.toString(), mount.mountPath(), mode);
-            log.debug("Pod '{}': volume '{}' bound '{}' → '{}'", name, resolvedVolName, mountSrc, mount.mountPath());
         }
 
         this.status = Status.RUNNING;
@@ -823,4 +828,5 @@ public final class PodRun implements WorkflowNode {
     /** The stopped container. Logs and state remain accessible until Ryuk removes it. */
     public GenericContainer<?> container() { return container; }
     public Duration duration()             { return duration; }
+
 }

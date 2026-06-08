@@ -22,6 +22,10 @@ package eu.vnagy.argotools.junit.executor;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.utility.DockerImageName;
+
+import java.util.function.Function;
 import com.fasterxml.jackson.dataformat.yaml.YAMLAnchorReplayingFactory;
 import eu.vnagy.argotools.junit.artifact.ArtifactDriver;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
@@ -113,6 +117,9 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
 
     // Docker network for step-container connectivity — null unless kwok is in play
     private Network network;
+
+    // nullable — when set, used instead of new GenericContainer<>(image) to create step containers
+    private Function<DockerImageName, GenericContainer<?>> containerFactory = null;
 
     // Resources owned by this executor; closed by close(), null when externally supplied
     private KwokContainer ownedKwok;
@@ -244,6 +251,20 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
     }
 
     /**
+     * Overrides how step containers are created.
+     *
+     * <p><b>Package-private — not part of the public library API.</b> Intended for tests that need
+     * to verify behaviour when the JVM and the Docker daemon do not share a filesystem (e.g. DinD).
+     *
+     * @param factory a function that maps an image name to a configured {@link GenericContainer}
+     * @return this executor, for chaining
+     */
+    ArgoWorkflowExecutor withContainerFactory(Function<DockerImageName, GenericContainer<?>> factory) {
+        this.containerFactory = factory;
+        return this;
+    }
+
+    /**
      * Lazily starts a kwok cluster owned by this executor and returns a fabric8
      * {@link KubernetesClient} connected to it.
      *
@@ -346,6 +367,7 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 .artifactDrivers(drivers)
                 .volumes(volumes)
                 .defaultRetryStrategy(defaultRetryStrategy)
+                .containerFactory(containerFactory)
                 .build();
 
         // Download workflow-level HTTP input artifacts before execution starts

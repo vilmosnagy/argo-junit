@@ -1012,6 +1012,54 @@ class WorkflowSummaryTest {
         }
     }
 
+    @Test
+    void exitHandlerSummary() throws Exception {
+        try (WorkflowRun run = ArgoWorkflowExecutor
+                .from(Path.of(getClass().getResource("/examples/exit-handlers.yaml").toURI()))
+                .execute(Duration.ofMinutes(10))) {
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Failed
+
+                    STEP                 DURATION  MESSAGE
+                     ✗ intentional-fail  {duration}  exit code 1  {cid}
+
+                    onExit: exit-handler
+                     ✔ exit-handler
+                     ├─✔ notify      {duration}  {cid}
+                     ├─○ celebrate       skipped
+                     └─✔ cry         {duration}  {cid}
+                    """));
+        }
+    }
+
+    @Test
+    void globalOutputsSummary() throws Exception {
+        try (WorkflowRun run = ArgoWorkflowExecutor
+                .from(Path.of(getClass().getResource("/examples/global-outputs.yaml").toURI()))
+                .execute(Duration.ofMinutes(10))) {
+
+            assertThat(normalizeDurations(WorkflowSummary.format(run)), equalTo("""
+                    Status:  Succeeded
+
+                    STEP                          DURATION  MESSAGE
+                     ✔ generate-globals
+                     ├─✔ generate                 {duration}  {cid}
+                     └─✔ consume-globals
+                        ├─✔ consume-global-param  {duration}  {cid}
+                        └─✔ consume-global-art    {duration}  {cid}
+
+                    GLOBAL OUTPUTS
+                      my-global-param = hello world
+
+                    onExit: consume-globals
+                     ✔ consume-globals
+                     ├─✔ consume-global-param  {duration}  {cid}
+                     └─✔ consume-global-art    {duration}  {cid}
+                    """));
+        }
+    }
+
     private static void setParam(Workflow wf, String name, String value) {
         wf.getSpec().getArguments().getParameters().stream()
                 .filter(p -> name.equals(p.getName()))

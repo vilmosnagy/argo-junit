@@ -333,7 +333,10 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         log.debug("Templates: {}", templateMap.keySet());
 
         if (k8sClient != null) {
-            templateMap.putAll(resolveTemplateRefs(Collections.unmodifiableMap(templateMap), entrypointName));
+            List<String> roots = new ArrayList<>(List.of(entrypointName));
+            String onExitForRefs = workflow.getSpec().getOnExit();
+            if (onExitForRefs != null) roots.add(onExitForRefs);
+            templateMap.putAll(resolveTemplateRefs(Collections.unmodifiableMap(templateMap), roots));
         }
 
         Template entrypointTemplate = templateMap.get(entrypointName);
@@ -379,13 +382,39 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 ? ctx : ctx.withInputArtifacts(workflowArtifacts);
 
         WorkflowNode root = WorkflowNode.from(entrypointName, entrypointTemplate, templateMap, Set.of());
-        // Workflow arguments are the initial input parameters for the entrypoint, matching Argo semantics:
-        // a template's {{inputs.parameters.X}} at the entrypoint level resolves from workflow arguments.
-        CompletableFuture<Void> future = root.executeAsync(rootCtx, workflowParams)
-                .thenAccept(_ -> {})
-                .whenComplete((_, _) -> threadPool.shutdown());
 
-        return new WorkflowRun(root, future, ctx.tmpDir);
+        String onExitName = workflow.getSpec().getOnExit();
+        WorkflowNode exitHandlerNode = null;
+        CompletableFuture<Void> future;
+
+        if (onExitName != null) {
+            Template exitTemplate = templateMap.get(onExitName);
+            if (exitTemplate == null) throw new IllegalArgumentException(
+                    "onExit template '" + onExitName + "' not found in workflow");
+            WorkflowNode exitHandler = WorkflowNode.from(onExitName, exitTemplate, templateMap, Set.of());
+            exitHandlerNode = exitHandler;
+            // Workflow arguments are the initial input parameters for the entrypoint, matching Argo semantics:
+            // a template's {{inputs.parameters.X}} at the entrypoint level resolves from workflow arguments.
+            future = root.executeAsync(rootCtx, workflowParams)
+                    .thenCompose(entrypointResult -> {
+                        String status = root.succeeded() ? "Succeeded"
+                                : root.failed() ? "Failed" : "Error";
+                        log.debug("Entrypoint finished with status '{}'; running onExit handler '{}'",
+                                status, onExitName);
+                        return exitHandler.executeAsync(
+                                rootCtx.withWorkflowStatus(status), workflowParams)
+                                .thenAccept(_ -> {});
+                    })
+                    .whenComplete((_, _) -> threadPool.shutdown());
+        } else {
+            // Workflow arguments are the initial input parameters for the entrypoint, matching Argo semantics:
+            // a template's {{inputs.parameters.X}} at the entrypoint level resolves from workflow arguments.
+            future = root.executeAsync(rootCtx, workflowParams)
+                    .thenAccept(_ -> {})
+                    .whenComplete((_, _) -> threadPool.shutdown());
+        }
+
+        return new WorkflowRun(root, exitHandlerNode, future, ctx.tmpDir, rootCtx.globalOutputParams);
     }
 
     /**
@@ -450,7 +479,7 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
      * silently ignored, so tests do not need to install every transitively-mentioned WT.
      */
     private Map<String, Template> resolveTemplateRefs(Map<String, Template> workflowTemplates,
-                                                       String entrypointName) {
+                                                       Collection<String> roots) {
         Map<String, Template> result = new LinkedHashMap<>();
         // WT name -> { templateName -> Template } (all templates in a fetched WT, cached)
         Map<String, Map<String, Template>> loadedWTs = new LinkedHashMap<>();
@@ -459,8 +488,10 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         Queue<String> localQueue = new ArrayDeque<>();
         Queue<String> wtKeyQueue = new ArrayDeque<>();
 
-        visitedLocal.add(entrypointName);
-        localQueue.add(entrypointName);
+        for (String root : roots) {
+            visitedLocal.add(root);
+            localQueue.add(root);
+        }
 
         while (!localQueue.isEmpty() || !wtKeyQueue.isEmpty()) {
             while (!localQueue.isEmpty()) {

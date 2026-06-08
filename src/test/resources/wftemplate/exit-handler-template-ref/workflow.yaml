@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: exit-handler-via-template-ref-
+spec:
+  entrypoint: main
+  onExit: on-exit
+  templates:
+  - name: main
+    container:
+      image: alpine:3.23
+      command: [sh, -c]
+      args: ["echo main done"]
+  - name: on-exit
+    dag:
+      tasks:
+      - name: notify
+        templateRef:
+          name: exit-handler-utils
+          template: send-notification

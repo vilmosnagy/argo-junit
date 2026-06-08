@@ -33,22 +33,40 @@ public final class WorkflowSummary {
 
     public static String format(WorkflowRun run) {
         StringBuilder out = new StringBuilder();
-        out.append("Status:  ").append(run.succeeded() ? "Succeeded" : run.failed() ? "Failed" : run.errored() ? "Errored" : "Unknown")
-           .append('\n').append('\n');
+        String status = run.succeeded() ? "Succeeded" : run.failed() ? "Failed" : run.errored() ? "Errored" : "Unknown";
+        out.append("Status:  ").append(status).append('\n').append('\n');
 
         List<String[]> rows = new ArrayList<>();
         rows.add(new String[]{"STEP", "DURATION", "MESSAGE"});
         collect(run.entrypoint(), " ", true, rows);
+        appendTable(out, rows);
 
+        Map<String, String> globals = run.globalParameters();
+        if (!globals.isEmpty()) {
+            out.append('\n').append("GLOBAL OUTPUTS").append('\n');
+            globals.entrySet().stream()
+                   .sorted(Map.Entry.comparingByKey())
+                   .forEach(e -> out.append("  ").append(e.getKey()).append(" = ").append(e.getValue()).append('\n'));
+        }
+
+        if (run.hasExitHandler()) {
+            WorkflowNode exitHandler = run.exitHandler();
+            out.append('\n').append("onExit: ").append(exitHandler.name()).append('\n');
+            List<String[]> exitRows = new ArrayList<>();
+            collect(exitHandler, " ", true, exitRows);
+            appendTable(out, exitRows);
+        }
+
+        return out.toString();
+    }
+
+    private static void appendTable(StringBuilder out, List<String[]> rows) {
         int stepW = rows.stream().mapToInt(r -> r[0].length()).max().orElse(4);
         int durW  = rows.stream().mapToInt(r -> r[1].length()).max().orElse(8);
-
         for (String[] row : rows) {
             String line = pad(row[0], stepW) + "  " + pad(row[1], durW) + "  " + row[2];
             out.append(line.stripTrailing()).append('\n');
         }
-
-        return out.toString();
     }
 
     private static void collect(WorkflowNode node, String prefix, boolean isRoot,

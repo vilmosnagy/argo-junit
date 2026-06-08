@@ -71,7 +71,7 @@ public final class PodRun implements WorkflowNode {
 
     private record ArtifactSpec(String name, String path, Integer mode, Artifact artifact) {}
 
-    private record OutputParamSpec(String name, String path, String defaultValue) {}
+    private record OutputParamSpec(String name, String path, String defaultValue, String globalName) {}
 
     private record ConfigMapRef(String paramName, String cmName, String key) {}
 
@@ -162,7 +162,8 @@ public final class PodRun implements WorkflowNode {
             for (Parameter p : template.getOutputs().getParameters()) {
                 if (p.getValueFrom() != null && p.getValueFrom().getPath() != null) {
                     outParams.add(new OutputParamSpec(
-                            p.getName(), p.getValueFrom().getPath(), p.getValueFrom().getDefault()));
+                            p.getName(), p.getValueFrom().getPath(), p.getValueFrom().getDefault(),
+                            p.getGlobalName()));
                 }
             }
         }
@@ -371,6 +372,11 @@ public final class PodRun implements WorkflowNode {
                                 log.debug("Pod '{}': artifact '{}' included — downstream requested it", name, s.name());
                                 return true;
                             }
+                            if (s.artifact() != null && s.artifact().getGlobalName() != null) {
+                                log.debug("Pod '{}': artifact '{}' included — has globalName '{}'",
+                                        name, s.name(), s.artifact().getGlobalName());
+                                return true;
+                            }
                             if (s.artifact() == null) {
                                 log.debug("Pod '{}': artifact '{}' skipped — no storage spec, not requested", name, s.name());
                                 return false;
@@ -391,6 +397,11 @@ public final class PodRun implements WorkflowNode {
                         collected.put(spec.name(), extracted);
                         log.debug("Pod '{}': collected output artifact '{}' from '{}' → '{}'",
                                 name, spec.name(), spec.path(), extracted);
+                        if (spec.artifact() != null && spec.artifact().getGlobalName() != null) {
+                            ctx.globalOutputArtifacts.put(spec.artifact().getGlobalName(), extracted);
+                            log.debug("Pod '{}': global artifact '{}' registered",
+                                    name, spec.artifact().getGlobalName());
+                        }
                         if (spec.artifact() != null) {
                             Artifact substituted = ExecutionContext.substituteArtifact(
                                     spec.artifact(), ctx, finalInputParams);
@@ -425,6 +436,10 @@ public final class PodRun implements WorkflowNode {
                     String value = readFileFromContainer(this.container, spec.path());
                     params.put(spec.name(), value);
                     log.debug("Pod '{}': output parameter '{}' = '{}'", name, spec.name(), value);
+                    if (spec.globalName() != null) {
+                        ctx.globalOutputParams.put(spec.globalName(), value);
+                        log.debug("Pod '{}': global parameter '{}' = '{}'", name, spec.globalName(), value);
+                    }
                 } catch (Exception e) {
                     if (spec.defaultValue() != null) {
                         params.put(spec.name(), spec.defaultValue());

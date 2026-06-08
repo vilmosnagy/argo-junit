@@ -77,6 +77,18 @@ final class ExecutionContext {
             Pattern.compile("\\{\\{\\s*tasks\\.([^.}]+)\\.outputs\\.artifacts\\.([^}]+?)\\s*\\}\\}");
     private static final Pattern INPUTS_ARTIFACT_FROM =
             Pattern.compile("\\{\\{\\s*inputs\\.artifacts\\.([^}]+?)\\s*\\}\\}");
+    private static final Pattern WORKFLOW_OUTPUT_PARAMETER =
+            Pattern.compile("\\{\\{\\s*workflow\\.outputs\\.parameters\\.([^}]+?)\\s*\\}\\}");
+    static final Pattern WORKFLOW_OUTPUT_ARTIFACT =
+            Pattern.compile("\\{\\{\\s*workflow\\.outputs\\.artifacts\\.([^}]+?)\\s*\\}\\}");
+    private static final Pattern WORKFLOW_STATUS_PATTERN =
+            Pattern.compile("\\{\\{\\s*workflow\\.status\\s*\\}\\}");
+    private static final Pattern WORKFLOW_NAME_PATTERN =
+            Pattern.compile("\\{\\{\\s*workflow\\.name\\s*\\}\\}");
+    private static final Pattern WORKFLOW_DURATION_PATTERN =
+            Pattern.compile("\\{\\{\\s*workflow\\.duration\\s*\\}\\}");
+    private static final Pattern WORKFLOW_FAILURES_PATTERN =
+            Pattern.compile("\\{\\{\\s*workflow\\.failures\\s*\\}\\}");
 
     final Map<String, Template> templateMap;
     final Map<String, String> workflowParams;
@@ -111,6 +123,12 @@ final class ExecutionContext {
     final RetryStrategy defaultRetryStrategy;
     // nullable — when set, used instead of new GenericContainer<>(image) to create step containers
     final Function<DockerImageName, GenericContainer<?>> containerFactory;
+    // global output parameters registered via outputs[].globalName; shared across all scopes
+    final ConcurrentHashMap<String, String> globalOutputParams;
+    // global output artifacts registered via outputs[].globalName; shared across all scopes
+    final ConcurrentHashMap<String, Path> globalOutputArtifacts;
+    // nullable — the workflow's final status, set only when running the onExit handler
+    final String workflowStatus;
 
     private ExecutionContext(Builder b) {
         this.templateMap = b.templateMap;
@@ -134,6 +152,9 @@ final class ExecutionContext {
         this.volumes = b.volumes;
         this.defaultRetryStrategy = b.defaultRetryStrategy;
         this.containerFactory = b.containerFactory;
+        this.globalOutputParams = b.globalOutputParams;
+        this.globalOutputArtifacts = b.globalOutputArtifacts;
+        this.workflowStatus = b.workflowStatus;
     }
 
     static Builder builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
@@ -162,6 +183,9 @@ final class ExecutionContext {
         b.volumes = volumes;
         b.defaultRetryStrategy = defaultRetryStrategy;
         b.containerFactory = containerFactory;
+        b.globalOutputParams = globalOutputParams;
+        b.globalOutputArtifacts = globalOutputArtifacts;
+        b.workflowStatus = workflowStatus;
         return b;
     }
 
@@ -178,7 +202,15 @@ final class ExecutionContext {
                 .defaultRetryStrategy(defaultRetryStrategy)
                 .containerFactory(containerFactory)
                 .inputArtifacts(inputArtifacts)
+                .globalOutputParams(globalOutputParams)
+                .globalOutputArtifacts(globalOutputArtifacts)
+                .workflowStatus(workflowStatus)
                 .build();
+    }
+
+    /** Returns a copy of this context with the workflow status set, used when running the exit handler. */
+    ExecutionContext withWorkflowStatus(String status) {
+        return toBuilder().workflowStatus(status).build();
     }
 
     /**
@@ -253,6 +285,10 @@ final class ExecutionContext {
         if (m.matches()) {
             return Optional.ofNullable(inputArtifacts.get(m.group(1)));
         }
+        m = WORKFLOW_OUTPUT_ARTIFACT.matcher(from);
+        if (m.matches()) {
+            return Optional.ofNullable(globalOutputArtifacts.get(m.group(1)));
+        }
         return Optional.empty();
     }
 
@@ -299,6 +335,13 @@ final class ExecutionContext {
         result = applyNestedPattern(result, TASK_OUTPUT_PARAM, taskOutputParams);
         result = applyPattern(result, INPUTS_PARAMETER, inputParams);
         result = applyPattern(result, WORKFLOW_PARAMETER, workflowParams);
+        result = applyPattern(result, WORKFLOW_OUTPUT_PARAMETER, globalOutputParams);
+        if (workflowStatus != null) {
+            result = WORKFLOW_STATUS_PATTERN.matcher(result).replaceAll(Matcher.quoteReplacement(workflowStatus));
+            result = WORKFLOW_NAME_PATTERN.matcher(result).replaceAll("");
+            result = WORKFLOW_DURATION_PATTERN.matcher(result).replaceAll("0");
+            result = WORKFLOW_FAILURES_PATTERN.matcher(result).replaceAll("[]");
+        }
         if (!result.equals(expr)) {
             log.trace("Substitute: '{}' → '{}'", expr, result);
         }
@@ -379,6 +422,9 @@ final class ExecutionContext {
         private Map<String, IoK8sApiCoreV1Volume> volumes = Map.of();
         private RetryStrategy defaultRetryStrategy = null;
         private Function<DockerImageName, GenericContainer<?>> containerFactory = null;
+        private ConcurrentHashMap<String, String> globalOutputParams = new ConcurrentHashMap<>();
+        private ConcurrentHashMap<String, Path> globalOutputArtifacts = new ConcurrentHashMap<>();
+        private String workflowStatus = null;
 
         private Builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
                         ExecutorService threadPool) {
@@ -407,6 +453,9 @@ final class ExecutionContext {
         }
         Builder defaultRetryStrategy(RetryStrategy v) { this.defaultRetryStrategy = v; return this; }
         Builder containerFactory(Function<DockerImageName, GenericContainer<?>> v) { this.containerFactory = v; return this; }
+        Builder globalOutputParams(ConcurrentHashMap<String, String> v) { this.globalOutputParams = v; return this; }
+        Builder globalOutputArtifacts(ConcurrentHashMap<String, Path> v) { this.globalOutputArtifacts = v; return this; }
+        Builder workflowStatus(String v) { this.workflowStatus = v; return this; }
 
         ExecutionContext build() { return new ExecutionContext(this); }
     }

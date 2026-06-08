@@ -1,0 +1,11 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: exit-handler-utils
+spec:
+  templates:
+  - name: send-notification
+    container:
+      image: alpine:3.23
+      command: [sh, -c]
+      args: ["echo notification sent"]

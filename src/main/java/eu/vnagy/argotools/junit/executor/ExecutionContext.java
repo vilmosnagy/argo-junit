@@ -58,6 +58,8 @@ final class ExecutionContext {
 
     private static final Pattern STEP_OUTPUT_RESULT =
             Pattern.compile("\\{\\{\\s*steps\\.([^.}]+)\\.outputs\\.result\\s*\\}\\}");
+    private static final Pattern TASK_OUTPUT_RESULT =
+            Pattern.compile("\\{\\{\\s*tasks\\.([^.}]+)\\.outputs\\.result\\s*\\}\\}");
     private static final Pattern STEP_IP =
             Pattern.compile("\\{\\{\\s*steps\\.([^.}]+)\\.ip\\s*\\}\\}");
     private static final Pattern TASK_IP =
@@ -96,6 +98,7 @@ final class ExecutionContext {
     final Map<String, String> workflowParams;
     final ExecutorService threadPool;
     final ConcurrentHashMap<String, String> stepOutputResults;
+    final ConcurrentHashMap<String, String> taskOutputResults;
     final ConcurrentHashMap<String, String> stepIps;
     final ConcurrentHashMap<String, String> taskIps;
     final ConcurrentHashMap<String, Map<String, Path>> stepArtifacts;
@@ -143,6 +146,7 @@ final class ExecutionContext {
         this.workflowParams = b.workflowParams;
         this.threadPool = b.threadPool;
         this.stepOutputResults = b.stepOutputResults;
+        this.taskOutputResults = b.taskOutputResults;
         this.stepIps = b.stepIps;
         this.taskIps = b.taskIps;
         this.stepArtifacts = b.stepArtifacts;
@@ -177,6 +181,7 @@ final class ExecutionContext {
     Builder toBuilder() {
         Builder b = new Builder(templateMap, workflowParams, threadPool);
         b.stepOutputResults = stepOutputResults;
+        b.taskOutputResults = taskOutputResults;
         b.stepIps = stepIps;
         b.taskIps = taskIps;
         b.stepArtifacts = stepArtifacts;
@@ -349,6 +354,7 @@ final class ExecutionContext {
 
     String substitute(String expr, Map<String, String> inputParams) {
         String result = applyPattern(expr, STEP_OUTPUT_RESULT, stepOutputResults);
+        result = applyPattern(result, TASK_OUTPUT_RESULT, taskOutputResults);
         result = applyPattern(result, STEP_IP, stepIps);
         result = applyPattern(result, TASK_IP, taskIps);
         result = applyNestedPattern(result, STEP_OUTPUT_PARAM, stepOutputParams);
@@ -427,6 +433,7 @@ final class ExecutionContext {
 
         // Scope maps — fresh instances by default; toBuilder() replaces these with existing refs
         private ConcurrentHashMap<String, String> stepOutputResults = new ConcurrentHashMap<>();
+        private ConcurrentHashMap<String, String> taskOutputResults = new ConcurrentHashMap<>();
         private ConcurrentHashMap<String, String> stepIps = new ConcurrentHashMap<>();
         private ConcurrentHashMap<String, String> taskIps = new ConcurrentHashMap<>();
         private ConcurrentHashMap<String, Map<String, Path>> stepArtifacts = new ConcurrentHashMap<>();

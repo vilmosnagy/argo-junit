@@ -1,0 +1,45 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: dag-task-result-when-
+spec:
+  entrypoint: branch-on-result
+  templates:
+    - name: branch-on-result
+      dag:
+        tasks:
+          - name: classifier
+            template: classify
+          - name: path-a
+            depends: classifier
+            when: "{{tasks.classifier.outputs.result}} == a"
+            template: echo
+            arguments:
+              parameters:
+                - name: message
+                  value: "took path A"
+          - name: path-b
+            depends: classifier
+            when: "{{tasks.classifier.outputs.result}} == b"
+            template: echo
+            arguments:
+              parameters:
+                - name: message
+                  value: "took path B"
+
+    - name: classify
+      script:
+        image: python:3.11-alpine
+        command: [python]
+        source: |
+          print("a")
+
+    - name: echo
+      inputs:
+        parameters:
+          - name: message
+      script:
+        image: alpine:3.23
+        command: [sh]
+        source: |
+          echo "{{inputs.parameters.message}}"

@@ -206,7 +206,8 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                 return currentTasks.get(spec.name()).executeAsync(podCtx, resolvedArgs);
             }, localCtx.threadPool)
             .thenApply(result -> registerOutputs(result, spec.name(),
-                    localCtx.taskIps, localCtx.taskArtifacts, localCtx.taskOutputParams, null));
+                    localCtx.taskIps, localCtx.taskArtifacts, localCtx.taskOutputParams,
+                    localCtx.taskOutputResults));
 
             futures.put(spec.name(), taskFuture);
         }

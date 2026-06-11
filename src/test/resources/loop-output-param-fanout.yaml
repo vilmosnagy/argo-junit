@@ -1,0 +1,61 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: loop-output-param-fanout-
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: items
+        value: '["alpha","beta"]'
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: lookup
+            template: lookup
+            arguments:
+              parameters:
+                - name: name
+                  value: "{{item}}"
+            withParam: "{{workflow.parameters.items}}"
+          - name: process
+            depends: "lookup.Succeeded"
+            template: process
+            arguments:
+              parameters:
+                - name: name
+                  value: "{{item.name}}"
+                - name: version
+                  value: "{{item.version}}"
+            withParam: "{{tasks.lookup.outputs.parameters}}"
+
+    - name: lookup
+      inputs:
+        parameters:
+          - name: name
+      outputs:
+        parameters:
+          - name: name
+            valueFrom:
+              path: /tmp/name.txt
+          - name: version
+            valueFrom:
+              path: /tmp/version.txt
+      script:
+        image: alpine:3.23
+        command: [sh]
+        source: |
+          echo "{{inputs.parameters.name}}" > /tmp/name.txt
+          echo "v1-{{inputs.parameters.name}}" > /tmp/version.txt
+
+    - name: process
+      inputs:
+        parameters:
+          - name: name
+          - name: version
+      script:
+        image: alpine:3.23
+        command: [sh]
+        source: |
+          echo "{{inputs.parameters.name}}:{{inputs.parameters.version}}"

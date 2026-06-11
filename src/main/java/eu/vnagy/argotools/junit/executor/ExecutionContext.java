@@ -68,6 +68,9 @@ final class ExecutionContext {
             Pattern.compile("\\{\\{\\s*steps\\.([^.}]+)\\.outputs\\.parameters\\.([^}]+?)\\s*\\}\\}");
     private static final Pattern TASK_OUTPUT_PARAM =
             Pattern.compile("\\{\\{\\s*tasks\\.([^.}]+)\\.outputs\\.parameters\\.([^}]+?)\\s*\\}\\}");
+    // package-private so DagRun can scan withParam values at plan time to decide if aggregation is needed
+    static final Pattern TASK_OUTPUT_PARAMS_AGGREGATED =
+            Pattern.compile("\\{\\{\\s*tasks\\.([^.}]+)\\.outputs\\.parameters\\s*\\}\\}");
     private static final Pattern INPUTS_PARAMETER =
             Pattern.compile("\\{\\{\\s*inputs\\.parameters\\.([^}]+?)\\s*\\}\\}");
     private static final Pattern WORKFLOW_PARAMETER =
@@ -110,6 +113,8 @@ final class ExecutionContext {
     // paramName -> value, registered after each step/task completes (from outputs.parameters[].valueFrom.path)
     final ConcurrentHashMap<String, Map<String, String>> stepOutputParams;
     final ConcurrentHashMap<String, Map<String, String>> taskOutputParams;
+    // loop task name -> JSON array of per-iteration output param maps, registered after all iterations complete
+    final ConcurrentHashMap<String, String> taskAggregatedOutputParams;
     // resolved input artifact paths for the current pod invocation (immutable per-pod)
     final Map<String, Path> inputArtifacts;
     // single root temp directory for all artifact files created during this run
@@ -161,6 +166,7 @@ final class ExecutionContext {
         this.taskArtifacts = b.taskArtifacts;
         this.stepOutputParams = b.stepOutputParams;
         this.taskOutputParams = b.taskOutputParams;
+        this.taskAggregatedOutputParams = b.taskAggregatedOutputParams;
         this.inputArtifacts = b.inputArtifacts;
         this.tmpDir = b.tmpDir != null ? b.tmpDir : createTmpDir();
         this.requestedOutputArtifacts = b.requestedOutputArtifacts;
@@ -198,6 +204,7 @@ final class ExecutionContext {
         b.taskArtifacts = taskArtifacts;
         b.stepOutputParams = stepOutputParams;
         b.taskOutputParams = taskOutputParams;
+        b.taskAggregatedOutputParams = taskAggregatedOutputParams;
         b.inputArtifacts = inputArtifacts;
         b.tmpDir = tmpDir;
         b.requestedOutputArtifacts = requestedOutputArtifacts;
@@ -379,6 +386,7 @@ final class ExecutionContext {
         result = applyPattern(result, TASK_IP, taskIps);
         result = applyNestedPattern(result, STEP_OUTPUT_PARAM, stepOutputParams);
         result = applyNestedPattern(result, TASK_OUTPUT_PARAM, taskOutputParams);
+        result = applyPattern(result, TASK_OUTPUT_PARAMS_AGGREGATED, taskAggregatedOutputParams);
         result = applyPattern(result, INPUTS_PARAMETER, inputParams);
         result = applyPattern(result, WORKFLOW_PARAMETER, workflowParams);
         result = applyPattern(result, WORKFLOW_OUTPUT_PARAMETER, globalOutputParams);
@@ -466,6 +474,7 @@ final class ExecutionContext {
         private ConcurrentHashMap<String, Map<String, Path>> taskArtifacts = new ConcurrentHashMap<>();
         private ConcurrentHashMap<String, Map<String, String>> stepOutputParams = new ConcurrentHashMap<>();
         private ConcurrentHashMap<String, Map<String, String>> taskOutputParams = new ConcurrentHashMap<>();
+        private ConcurrentHashMap<String, String> taskAggregatedOutputParams = new ConcurrentHashMap<>();
 
         // Per-pod fields
         private Map<String, Path> inputArtifacts = Map.of();
@@ -519,6 +528,7 @@ final class ExecutionContext {
         Builder containerFactory(Function<DockerImageName, GenericContainer<?>> v) { this.containerFactory = v; return this; }
         Builder globalOutputParams(ConcurrentHashMap<String, String> v) { this.globalOutputParams = v; return this; }
         Builder globalOutputArtifacts(ConcurrentHashMap<String, Path> v) { this.globalOutputArtifacts = v; return this; }
+        Builder taskAggregatedOutputParams(ConcurrentHashMap<String, String> v) { this.taskAggregatedOutputParams = v; return this; }
         Builder loopItemValue(String v)             { this.loopItemValue = v; return this; }
         Builder loopItemFields(Map<String, String> v) { this.loopItemFields = v != null ? v : Map.of(); return this; }
         Builder workflowStatus(String v) { this.workflowStatus = v; return this; }

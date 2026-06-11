@@ -49,6 +49,8 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
     private final List<DagTaskSpec> specs;
     private volatile Map<String, WorkflowNode> tasks;
     private final Map<String, Set<String>> neededArtifacts;
+    // loop task names whose aggregated outputs.parameters are referenced by a downstream withParam
+    private final Set<String> tasksNeedingParamAggregation;
 
     /**
      * Plan constructor: validates structure, builds child plan nodes eagerly up to the first
@@ -118,6 +120,19 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
         this.neededArtifacts = buildNeededArtifacts(
                 builtSpecs.stream().map(DagTaskSpec::artifactArgs).toList(),
                 ExecutionContext.TASK_ARTIFACT_FROM, template);
+
+        Set<String> needsAggregation = new HashSet<>();
+        for (DagTaskSpec spec : builtSpecs) {
+            List<String> exprs = new ArrayList<>();
+            if (spec.withParam() != null) exprs.add(spec.withParam());
+            if (spec.when() != null)      exprs.add(spec.when());
+            exprs.addAll(spec.args().values());
+            for (String expr : exprs) {
+                java.util.regex.Matcher m = ExecutionContext.TASK_OUTPUT_PARAMS_AGGREGATED.matcher(expr);
+                while (m.find()) needsAggregation.add(m.group(1));
+            }
+        }
+        this.tasksNeedingParamAggregation = Set.copyOf(needsAggregation);
     }
 
     // -------------------------------------------------------------------------
@@ -230,6 +245,9 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                                 List<WorkflowNode> results = iterFutures.stream()
                                         .map(CompletableFuture::join)
                                         .toList();
+                                if (tasksNeedingParamAggregation.contains(spec.name())) {
+                                    aggregateLoopOutputParams(spec.name(), results, localCtx);
+                                }
                                 return (WorkflowNode) new ItemRun(spec.name(), results, labels);
                             });
                 }, localCtx.threadPool));
@@ -334,6 +352,29 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
             }
         }
         return result;
+    }
+
+    private void aggregateLoopOutputParams(String taskName, List<WorkflowNode> results,
+                                           ExecutionContext ctx) {
+        List<Map<String, String>> allParams = new ArrayList<>();
+        boolean hasAny = false;
+        for (WorkflowNode n : results) {
+            Map<String, String> params;
+            if (n instanceof PodRun pod) params = pod.collectedOutputParams();
+            else if (n instanceof BaseCompositeRun comp) params = comp.collectedOutputParams();
+            else params = Map.of();
+            allParams.add(params);
+            if (!params.isEmpty()) hasAny = true;
+        }
+        if (!hasAny) return;
+        try {
+            String json = JSON.writeValueAsString(allParams);
+            ctx.taskAggregatedOutputParams.put(taskName, json);
+            log.debug("Dag '{}': aggregated {} iteration output param map(s) for task '{}'",
+                    name, allParams.size(), taskName);
+        } catch (Exception e) {
+            log.warn("Dag '{}': failed to serialize aggregated output params for task '{}'", name, taskName, e);
+        }
     }
 
     private static String buildItemLabel(boolean isScalar, String itemValue,

@@ -1,0 +1,65 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: loop-depends-one-fails-
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: produce-list
+            template: list-producer
+          - name: process-each
+            depends: produce-list
+            template: maybe-fail
+            arguments:
+              parameters:
+                - name: should-fail
+                  value: "{{item.shouldFail}}"
+            withParam: "{{tasks.produce-list.outputs.result}}"
+          - name: notify-done
+            depends: process-each.Succeeded
+            template: echo
+            arguments:
+              parameters:
+                - name: msg
+                  value: "all-done"
+          - name: on-failure
+            depends: process-each.Failed
+            template: echo
+            arguments:
+              parameters:
+                - name: msg
+                  value: "failure"
+
+    - name: list-producer
+      script:
+        image: python:3.11-alpine
+        command: [python]
+        source: |
+          import json
+          print(json.dumps([
+            {"shouldFail": "false"},
+            {"shouldFail": "true"},
+            {"shouldFail": "false"},
+          ]))
+
+    - name: maybe-fail
+      inputs:
+        parameters:
+          - name: should-fail
+      script:
+        image: alpine:3.23
+        command: [sh]
+        source: |
+          if [ "{{inputs.parameters.should-fail}}" = "true" ]; then exit 1; fi
+
+    - name: echo
+      inputs:
+        parameters:
+          - name: msg
+      script:
+        image: alpine:3.23
+        command: [sh]
+        source: echo "{{inputs.parameters.msg}}"

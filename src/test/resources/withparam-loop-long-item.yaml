@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: withparam-loop-long-item-
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      dag:
+        tasks:
+          # item JSON = {"description":"<137 x's>"} = 155 chars; should be trimmed to 150 + "..."
+          - name: process-each
+            template: noop
+            withParam: '[{"description":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}]'
+
+    - name: noop
+      script:
+        image: alpine:3.23
+        command: [sh]
+        source: "true"

@@ -27,7 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
-public sealed interface WorkflowNode permits DagRun, PodRun, StepsRun, UninitializedNode {
+public sealed interface WorkflowNode permits DagRun, ItemRun, PodRun, StepsRun, UninitializedNode {
 
     static WorkflowNode from(String name, Template template,
                              Map<String, Template> templateMap, Set<String> constructing) {
@@ -64,6 +64,10 @@ public sealed interface WorkflowNode permits DagRun, PodRun, StepsRun, Uninitial
     String name();
     boolean succeeded();
     boolean failed();
+    /** At least one iteration succeeded; for non-loop nodes equivalent to {@link #succeeded()}. */
+    default boolean anySucceeded() { return succeeded(); }
+    /** All iterations failed; for non-loop nodes equivalent to {@link #failed()}. */
+    default boolean allFailed()    { return failed(); }
     /** Task's {@code when} condition was false. */
     boolean skipped();
     /** Task's {@code depends} condition was false. */

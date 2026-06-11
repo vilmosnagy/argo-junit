@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: withparam-loop-
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: produce-list
+            template: list-producer
+          - name: process-each
+            depends: produce-list
+            template: echo-item
+            arguments:
+              parameters:
+                - name: label
+                  value: "{{item.label}}"
+                - name: value
+                  value: "{{item.value}}"
+            withParam: "{{tasks.produce-list.outputs.result}}"
+
+    - name: list-producer
+      script:
+        image: python:3.11-alpine
+        command: [python]
+        source: |
+          import json
+          print(json.dumps([
+            {"label": "first",  "value": "1"},
+            {"label": "second", "value": "2"},
+            {"label": "third",  "value": "3"},
+          ]))
+
+    - name: echo-item
+      inputs:
+        parameters:
+          - name: label
+          - name: value
+      script:
+        image: alpine:3.23
+        command: [sh]
+        source: echo "{{inputs.parameters.label}}={{inputs.parameters.value}}"

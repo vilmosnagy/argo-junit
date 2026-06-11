@@ -71,13 +71,24 @@ public final class WorkflowSummary {
 
     private static void collect(WorkflowNode node, String prefix, boolean isRoot,
                                 List<String[]> rows) {
+        collect(node, prefix, isRoot, null, rows);
+    }
+
+    private static void collect(WorkflowNode node, String prefix, boolean isRoot,
+                                String itemLabel, List<String[]> rows) {
         List<PodRun.Attempt> podAttempts = node instanceof PodRun pod ? pod.podAttempts() : List.of();
         boolean multiAttemptPod = podAttempts.size() > 1;
+
+        String msg = multiAttemptPod ? podAttempts.size() + " attempts" : message(node);
+        if (itemLabel != null && !itemLabel.isEmpty()) {
+            String label = itemLabel.length() > 150 ? itemLabel.substring(0, 150) + "..." : itemLabel;
+            msg = msg.isEmpty() ? label : label + "  " + msg;
+        }
 
         rows.add(new String[]{
                 prefix + icon(node) + " " + node.name(),
                 multiAttemptPod ? "" : duration(node),
-                multiAttemptPod ? podAttempts.size() + " attempts" : message(node)
+                msg
         });
 
         String childPrefix = isRoot ? " " : prefix.substring(0, prefix.length() - 2) +
@@ -96,7 +107,11 @@ public final class WorkflowSummary {
         } else {
             List<Map<String, WorkflowNode>> history = node.attemptHistory();
             if (history.isEmpty()) {
-                collectChildren(node.children(), childPrefix, rows);
+                if (node instanceof ItemRun itemRun) {
+                    collectIterations(itemRun, childPrefix, rows);
+                } else {
+                    collectChildren(node.children(), childPrefix, rows);
+                }
             } else {
                 int total = history.size() + 1;
                 for (int a = 1; a <= total; a++) {
@@ -121,6 +136,16 @@ public final class WorkflowSummary {
             return cid.isEmpty() ? base : base + "  " + cid;
         }
         return cid;
+    }
+
+    private static void collectIterations(ItemRun itemRun, String prefix, List<String[]> rows) {
+        List<WorkflowNode> iterations = itemRun.children();
+        List<String> labels = itemRun.itemLabels();
+        for (int i = 0; i < iterations.size(); i++) {
+            boolean last = i == iterations.size() - 1;
+            String label = i < labels.size() ? labels.get(i) : null;
+            collect(iterations.get(i), prefix + (last ? "└─" : "├─"), false, label, rows);
+        }
     }
 
     private static void collectChildren(List<WorkflowNode> children, String prefix, List<String[]> rows) {

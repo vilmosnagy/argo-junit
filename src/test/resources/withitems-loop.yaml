@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: withitems-loop-
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: echo-each
+            template: echo-item
+            arguments:
+              parameters:
+                - name: label
+                  value: "{{item}}"
+            withItems:
+              - alpha
+              - beta
+              - gamma
+
+    - name: echo-item
+      inputs:
+        parameters:
+          - name: label
+      script:
+        image: alpine:3.23
+        command: [sh]
+        source: echo "{{inputs.parameters.label}}"

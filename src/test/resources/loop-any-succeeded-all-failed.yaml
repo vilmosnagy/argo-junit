@@ -1,0 +1,68 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: loop-any-succeeded-all-failed-
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      dag:
+        tasks:
+          # task-1: item[0] succeeds, item[1] fails  →  AnySucceeded=true, AllFailed=false
+          - name: task-1
+            template: maybe-fail
+            arguments:
+              parameters:
+                - name: should-fail
+                  value: "{{item.shouldFail}}"
+            withParam: '[{"shouldFail":"false"},{"shouldFail":"true"}]'
+
+          # task-2: both items fail  →  AnySucceeded=false, AllFailed=true
+          - name: task-2
+            template: maybe-fail
+            arguments:
+              parameters:
+                - name: should-fail
+                  value: "{{item.shouldFail}}"
+            withParam: '[{"shouldFail":"true"},{"shouldFail":"true"}]'
+
+          # depends: "task-1.AnySucceeded || task-2.AllFailed"  →  both true  →  runs
+          - name: combined
+            depends: "task-1.AnySucceeded || task-2.AllFailed"
+            template: noop
+
+          # AnySucceeded on mixed results  →  runs (at least one succeeded)
+          - name: on-any-succeeded
+            depends: task-1.AnySucceeded
+            template: noop
+
+          # AllFailed on mixed results  →  omitted (not ALL failed)
+          - name: not-all-failed
+            depends: task-1.AllFailed
+            template: noop
+
+          # AnySucceeded on all-fail  →  omitted (none succeeded)
+          - name: not-any-succeeded
+            depends: task-2.AnySucceeded
+            template: noop
+
+          # AllFailed on all-fail  →  runs
+          - name: on-all-failed
+            depends: task-2.AllFailed
+            template: noop
+
+    - name: maybe-fail
+      inputs:
+        parameters:
+          - name: should-fail
+      script:
+        image: alpine:3.23
+        command: [sh]
+        source: |
+          if [ "{{inputs.parameters.should-fail}}" = "true" ]; then exit 1; fi
+
+    - name: noop
+      script:
+        image: alpine:3.23
+        command: [sh]
+        source: "true"

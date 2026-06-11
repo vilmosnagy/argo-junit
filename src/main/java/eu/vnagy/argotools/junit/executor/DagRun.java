@@ -20,6 +20,7 @@ package eu.vnagy.argotools.junit.executor;
  * #L%
  */
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.DAGTask;
 import eu.vnagy.argotools.junit.model.Template;
@@ -35,9 +36,14 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
 
     private static final Logger log = LoggerFactory.getLogger(DagRun.class);
 
+    private static final ObjectMapper JSON = new ObjectMapper();
+
     private record DagTaskSpec(String name, DependsExpression depends, String when,
                                Map<String, String> args, Map<String, Artifact> artifactArgs,
-                               Template taskTemplate, String childOwner) {}
+                               Template taskTemplate, String childOwner,
+                               String withParam, List<Object> withItems) {
+        boolean isLoop() { return withParam != null || !withItems.isEmpty(); }
+    }
 
     private final String owningWt;
     private final List<DagTaskSpec> specs;
@@ -98,7 +104,9 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                     DependsExpression.from(t.getDepends(), t.getDependencies()), t.getWhen(),
                     resolveArgs(t.getArguments()),
                     resolveArtifactArgs(t.getArguments()),
-                    taskTemplate, childOwner));
+                    taskTemplate, childOwner,
+                    t.getWithParam(),
+                    t.getWithItems() != null ? t.getWithItems() : List.of()));
             WorkflowNode child = (taskTemplate == null || nowConstructing.contains(taskTemplate.getName()))
                     ? new UninitializedNode(t.getName(), taskTemplate, childOwner)
                     : WorkflowNode.from(t.getName(), taskTemplate, templateMap, nowConstructing, childOwner);
@@ -165,6 +173,69 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
 
             log.debug("Dag '{}': task '{}' depends on {}", name, spec.name(), spec.depends().taskNames());
 
+            if (spec.isLoop()) {
+                futures.put(spec.name(), depsReady.thenComposeAsync(_ -> {
+                    Map<String, WorkflowNode> depResults = new LinkedHashMap<>();
+                    for (String dep : spec.depends().taskNames())
+                        depResults.put(dep, futures.get(dep).join());
+
+                    if (!spec.depends().evaluate(depResults)) {
+                        log.debug("Dag '{}': loop task '{}' omitted by depends expression", name, spec.name());
+                        return CompletableFuture.completedFuture(new ItemRun(spec.name(), List.of(), List.of()));
+                    }
+
+                    if (spec.when() != null && !spec.when().isBlank()) {
+                        String evaluated = localCtx.substitute(spec.when(), inputParams);
+                        if (!localCtx.evaluateWhen(evaluated)) {
+                            log.debug("Dag '{}': loop task '{}' omitted by when expression", name, spec.name());
+                            return CompletableFuture.completedFuture(new ItemRun(spec.name(), List.of(), List.of()));
+                        }
+                    }
+
+                    List<Map<String, String>> items = resolveLoopItems(spec, localCtx, inputParams);
+                    if (items.isEmpty()) {
+                        log.debug("Dag '{}': loop task '{}' has zero items", name, spec.name());
+                        return CompletableFuture.completedFuture(new ItemRun(spec.name(), List.of(), List.of()));
+                    }
+
+                    List<CompletableFuture<WorkflowNode>> iterFutures = new ArrayList<>();
+                    List<String> itemLabels = new ArrayList<>();
+                    for (int i = 0; i < items.size(); i++) {
+                        Map<String, String> itemFields = items.get(i);
+                        boolean isScalar = itemFields.containsKey("");
+                        String itemValue  = isScalar ? itemFields.get("") : null;
+                        Map<String, String> objectFields = isScalar ? Map.of() : itemFields;
+
+                        itemLabels.add(buildItemLabel(isScalar, itemValue, objectFields));
+
+                        ExecutionContext itemCtx = localCtx.withLoopItem(itemValue, objectFields);
+
+                        Map<String, String> resolvedArgs = new LinkedHashMap<>();
+                        spec.args().forEach((k, v) -> resolvedArgs.put(k, itemCtx.substitute(v, inputParams)));
+                        injectDefaultParams(spec.taskTemplate(), itemCtx, inputParams, resolvedArgs);
+
+                        ExecutionContext podCtx = itemCtx.withRequestedOutputArtifacts(
+                                neededArtifacts.getOrDefault(spec.name(), Set.of()));
+
+                        WorkflowNode iterNode = WorkflowNode.from(
+                                spec.name() + "[" + i + "]", spec.taskTemplate(),
+                                localCtx.templateMap, Set.of(originalTemplate.getName()),
+                                spec.childOwner());
+                        iterFutures.add(iterNode.executeAsync(podCtx, resolvedArgs));
+                    }
+
+                    List<String> labels = List.copyOf(itemLabels);
+                    return CompletableFuture.allOf(iterFutures.toArray(new CompletableFuture[0]))
+                            .thenApply(_ -> {
+                                List<WorkflowNode> results = iterFutures.stream()
+                                        .map(CompletableFuture::join)
+                                        .toList();
+                                return (WorkflowNode) new ItemRun(spec.name(), results, labels);
+                            });
+                }, localCtx.threadPool));
+                continue;
+            }
+
             CompletableFuture<WorkflowNode> taskFuture = depsReady.thenComposeAsync(_ -> {
                 Map<String, WorkflowNode> depResults = new LinkedHashMap<>();
                 for (String dep : spec.depends().taskNames()) depResults.put(dep, futures.get(dep).join());
@@ -218,10 +289,61 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                 }))
                 .thenApply(_ -> {
                     log.debug("Dag '{}': all tasks completed", name);
+
+                    // Replace pre-built placeholder nodes with LoopRun results
+                    boolean hasLoops = specs.stream().anyMatch(DagTaskSpec::isLoop);
+                    if (hasLoops) {
+                        Map<String, WorkflowNode> updated = new LinkedHashMap<>(currentTasks);
+                        for (DagTaskSpec spec : specs) {
+                            if (spec.isLoop()) updated.put(spec.name(), futures.get(spec.name()).join());
+                        }
+                        this.tasks = Collections.unmodifiableMap(updated);
+                    }
+
                     resolveOutputArtifacts(localCtx, inputParams);
                     resolveOutputParameters(localCtx, inputParams);
                     return (WorkflowNode) this;
                 });
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, String>> resolveLoopItems(DagTaskSpec spec, ExecutionContext ctx,
+            Map<String, String> inputParams) {
+        List<Object> rawItems;
+        if (spec.withParam() != null) {
+            String resolved = ctx.substitute(spec.withParam(), inputParams);
+            try {
+                rawItems = JSON.readerForListOf(Object.class).readValue(resolved);
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                        "Dag '" + name + "': task '" + spec.name()
+                        + "' withParam is not a valid JSON array: " + resolved, e);
+            }
+        } else {
+            rawItems = spec.withItems();
+        }
+
+        List<Map<String, String>> result = new ArrayList<>();
+        for (Object item : rawItems) {
+            if (item instanceof Map<?, ?> map) {
+                Map<String, String> fields = new LinkedHashMap<>();
+                map.forEach((k, v) -> fields.put(String.valueOf(k), String.valueOf(v)));
+                result.add(fields);
+            } else {
+                result.add(Map.of("", String.valueOf(item)));
+            }
+        }
+        return result;
+    }
+
+    private static String buildItemLabel(boolean isScalar, String itemValue,
+                                         Map<String, String> objectFields) {
+        if (isScalar) return itemValue;
+        try {
+            return JSON.writeValueAsString(objectFields);
+        } catch (Exception e) {
+            return objectFields.toString();
+        }
     }
 
     // -------------------------------------------------------------------------

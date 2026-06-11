@@ -111,8 +111,8 @@ public final class DependsExpression {
                     case "Skipped"      -> node.skipped();
                     case "Omitted"      -> node.omitted();
                     case "Daemoned"     -> node.daemoned();
-                    case "AnySucceeded" -> node.succeeded();   // withItems not supported; equivalent for single tasks
-                    case "AllFailed"    -> node.failed();      // withItems not supported; equivalent for single tasks
+                    case "AnySucceeded" -> node.anySucceeded();
+                    case "AllFailed"    -> node.allFailed();
                     default             -> false;
                 };
             } else {

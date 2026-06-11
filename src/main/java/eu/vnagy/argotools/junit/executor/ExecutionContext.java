@@ -93,6 +93,10 @@ final class ExecutionContext {
             Pattern.compile("\\{\\{\\s*workflow\\.failures\\s*\\}\\}");
     private static final Pattern WORKFLOW_CREATION_TIMESTAMP_PATTERN =
             Pattern.compile("\\{\\{\\s*workflow\\.creationTimestamp\\s*\\}\\}");
+    private static final Pattern ITEM_SCALAR =
+            Pattern.compile("\\{\\{\\s*item\\s*\\}\\}");
+    private static final Pattern ITEM_FIELD =
+            Pattern.compile("\\{\\{\\s*item\\.([^}]+?)\\s*\\}\\}");
 
     final Map<String, Template> templateMap;
     final Map<String, String> workflowParams;
@@ -132,6 +136,10 @@ final class ExecutionContext {
     final ConcurrentHashMap<String, String> globalOutputParams;
     // global output artifacts registered via outputs[].globalName; shared across all scopes
     final ConcurrentHashMap<String, Path> globalOutputArtifacts;
+    // nullable — scalar loop item value bound to {{item}} for the current withItems/withParam iteration
+    final String loopItemValue;
+    // loop item object fields bound to {{item.field}} for the current withItems/withParam iteration
+    final Map<String, String> loopItemFields;
     // nullable — the workflow's final status, set only when running the onExit handler
     final String workflowStatus;
     // nullable — generated name (generateName prefix + 5 random chars), set at workflow startup
@@ -166,6 +174,8 @@ final class ExecutionContext {
         this.containerFactory = b.containerFactory;
         this.globalOutputParams = b.globalOutputParams;
         this.globalOutputArtifacts = b.globalOutputArtifacts;
+        this.loopItemValue = b.loopItemValue;
+        this.loopItemFields = b.loopItemFields;
         this.workflowStatus = b.workflowStatus;
         this.workflowName = b.workflowName;
         this.workflowCreationTimestamp = b.workflowCreationTimestamp;
@@ -201,6 +211,8 @@ final class ExecutionContext {
         b.containerFactory = containerFactory;
         b.globalOutputParams = globalOutputParams;
         b.globalOutputArtifacts = globalOutputArtifacts;
+        b.loopItemValue = loopItemValue;
+        b.loopItemFields = loopItemFields;
         b.workflowStatus = workflowStatus;
         b.workflowName = workflowName;
         b.workflowCreationTimestamp = workflowCreationTimestamp;
@@ -252,6 +264,14 @@ final class ExecutionContext {
     ExecutionContext withRequestedOutputArtifacts(Set<String> names) {
         return toBuilder()
                 .requestedOutputArtifacts(names)
+                .build();
+    }
+
+    /** Returns a copy of this context with loop item bindings for one withParam/withItems iteration. */
+    ExecutionContext withLoopItem(String itemValue, Map<String, String> itemFields) {
+        return toBuilder()
+                .loopItemValue(itemValue)
+                .loopItemFields(itemFields)
                 .build();
     }
 
@@ -362,6 +382,12 @@ final class ExecutionContext {
         result = applyPattern(result, INPUTS_PARAMETER, inputParams);
         result = applyPattern(result, WORKFLOW_PARAMETER, workflowParams);
         result = applyPattern(result, WORKFLOW_OUTPUT_PARAMETER, globalOutputParams);
+        if (loopItemValue != null) {
+            result = ITEM_SCALAR.matcher(result).replaceAll(Matcher.quoteReplacement(loopItemValue));
+        }
+        if (!loopItemFields.isEmpty()) {
+            result = applyPattern(result, ITEM_FIELD, loopItemFields);
+        }
         if (workflowName != null) {
             result = WORKFLOW_NAME_PATTERN.matcher(result).replaceAll(Matcher.quoteReplacement(workflowName));
         }
@@ -457,6 +483,8 @@ final class ExecutionContext {
         private Function<DockerImageName, GenericContainer<?>> containerFactory = null;
         private ConcurrentHashMap<String, String> globalOutputParams = new ConcurrentHashMap<>();
         private ConcurrentHashMap<String, Path> globalOutputArtifacts = new ConcurrentHashMap<>();
+        private String loopItemValue = null;
+        private Map<String, String> loopItemFields = Map.of();
         private String workflowStatus = null;
         private String workflowName = null;
         private String workflowCreationTimestamp = null;
@@ -491,6 +519,8 @@ final class ExecutionContext {
         Builder containerFactory(Function<DockerImageName, GenericContainer<?>> v) { this.containerFactory = v; return this; }
         Builder globalOutputParams(ConcurrentHashMap<String, String> v) { this.globalOutputParams = v; return this; }
         Builder globalOutputArtifacts(ConcurrentHashMap<String, Path> v) { this.globalOutputArtifacts = v; return this; }
+        Builder loopItemValue(String v)             { this.loopItemValue = v; return this; }
+        Builder loopItemFields(Map<String, String> v) { this.loopItemFields = v != null ? v : Map.of(); return this; }
         Builder workflowStatus(String v) { this.workflowStatus = v; return this; }
         Builder workflowName(String v) { this.workflowName = v; return this; }
         Builder workflowCreationTimestamp(String v) { this.workflowCreationTimestamp = v; return this; }

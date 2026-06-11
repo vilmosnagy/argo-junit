@@ -28,6 +28,7 @@ import org.apache.commons.jexl3.MapContext;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Evaluates workflow expressions using Apache JEXL3.
@@ -46,6 +47,12 @@ public final class ExpressionEngine {
     private static final JexlEngine JEXL = new JexlBuilder()
             .silent(false)  // surface evaluation errors as exceptions instead of returning null
             .create();
+
+    // Matches JEXL3 unary operator keywords that must be quoted when they appear as plain string
+    // values in a when condition. These are handled at the lexer level before BARE_WORD_CONTEXT
+    // can intercept them, causing parse errors unless pre-quoted.
+    private static final Pattern BARE_JEXL_KEYWORDS =
+            Pattern.compile("(?<!['\"])\\b(empty|not|size)\\b(?!['\"])");
 
     /**
      * JEXL context that resolves any unknown identifier to its own name.
@@ -79,7 +86,7 @@ public final class ExpressionEngine {
      * @throws IllegalArgumentException if the expression cannot be parsed or evaluated
      */
     public static boolean evaluateWhen(String condition) {
-        condition = condition.trim();
+        condition = BARE_JEXL_KEYWORDS.matcher(condition.trim()).replaceAll("'$1'");
         try {
             Object result = JEXL.createExpression(condition).evaluate(BARE_WORD_CONTEXT);
             if (result instanceof Boolean b) return b;

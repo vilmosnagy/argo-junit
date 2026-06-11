@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: workflow-name-test-
+spec:
+  entrypoint: main
+  onExit: on-exit
+  templates:
+  - name: main
+    container:
+      image: alpine:3.23
+      command: [sh, -c]
+      args: ["echo name={{workflow.name}}"]
+
+  - name: on-exit
+    container:
+      image: alpine:3.23
+      command: [sh, -c]
+      args: ["echo name={{workflow.name}}"]

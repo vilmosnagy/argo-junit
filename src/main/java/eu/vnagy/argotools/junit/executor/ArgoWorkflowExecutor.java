@@ -49,6 +49,9 @@ import org.testcontainers.containers.Network;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -95,6 +98,9 @@ import java.util.ServiceLoader;
 public class ArgoWorkflowExecutor implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(ArgoWorkflowExecutor.class);
+
+    private static final String NAME_SUFFIX_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
+    private static final Random RANDOM = new Random();
 
     // YAMLAnchorReplayingFactory (added in Jackson 2.19) replays anchor node tokens on alias
     // references, fixing both POJO-field aliases and string-field aliases transparently.
@@ -365,6 +371,16 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         if (defaultRetryStrategy == null)
             defaultRetryStrategy = workflow.getSpec().getRetryStrategy();
 
+        var meta = workflow.getMetadata();
+        String workflowName = null;
+        if (meta != null && meta.getName() != null) {
+            workflowName = meta.getName();
+        } else if (meta != null && meta.getGenerateName() != null) {
+            workflowName = meta.getGenerateName() + generateWorkflowSuffix();
+        }
+        Instant workflowStart = Instant.now();
+        String creationTimestamp = DateTimeFormatter.ISO_INSTANT.format(workflowStart);
+
         ExecutionContext ctx = ExecutionContext.builder(templateMap, workflowParams, threadPool)
                 .k8sClient(k8sClient)
                 .dockerNetwork(network)
@@ -374,6 +390,8 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 .volumes(volumes)
                 .defaultRetryStrategy(defaultRetryStrategy)
                 .containerFactory(containerFactory)
+                .workflowName(workflowName)
+                .workflowCreationTimestamp(creationTimestamp)
                 .build();
 
         // Download workflow-level HTTP input artifacts before execution starts
@@ -399,10 +417,12 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                     .thenCompose(entrypointResult -> {
                         String status = root.succeeded() ? "Succeeded"
                                 : root.failed() ? "Failed" : "Error";
+                        long durationSeconds = ChronoUnit.SECONDS.between(workflowStart, Instant.now());
                         log.debug("Entrypoint finished with status '{}'; running onExit handler '{}'",
                                 status, onExitName);
                         return exitHandler.executeAsync(
-                                rootCtx.withWorkflowStatus(status), workflowParams)
+                                rootCtx.withWorkflowStatus(status, durationSeconds),
+                                workflowParams)
                                 .thenAccept(_ -> {});
                     })
                     .whenComplete((_, _) -> threadPool.shutdown());
@@ -602,6 +622,14 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         if (data == null || !data.containsKey(key)) throw new IllegalStateException(
                 "Key '" + key + "' not found in ConfigMap '" + configMapName + "'");
         return data.get(key);
+    }
+
+    private static String generateWorkflowSuffix() {
+        char[] chars = new char[5];
+        for (int i = 0; i < 5; i++) {
+            chars[i] = NAME_SUFFIX_CHARS.charAt(RANDOM.nextInt(NAME_SUFFIX_CHARS.length()));
+        }
+        return new String(chars);
     }
 
     private Map<String, Path> downloadWorkflowArtifacts(Path tmpDir) {

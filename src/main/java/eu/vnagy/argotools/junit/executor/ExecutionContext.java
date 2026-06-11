@@ -89,6 +89,8 @@ final class ExecutionContext {
             Pattern.compile("\\{\\{\\s*workflow\\.duration\\s*\\}\\}");
     private static final Pattern WORKFLOW_FAILURES_PATTERN =
             Pattern.compile("\\{\\{\\s*workflow\\.failures\\s*\\}\\}");
+    private static final Pattern WORKFLOW_CREATION_TIMESTAMP_PATTERN =
+            Pattern.compile("\\{\\{\\s*workflow\\.creationTimestamp\\s*\\}\\}");
 
     final Map<String, Template> templateMap;
     final Map<String, String> workflowParams;
@@ -129,6 +131,12 @@ final class ExecutionContext {
     final ConcurrentHashMap<String, Path> globalOutputArtifacts;
     // nullable — the workflow's final status, set only when running the onExit handler
     final String workflowStatus;
+    // nullable — generated name (generateName prefix + 5 random chars), set at workflow startup
+    final String workflowName;
+    // nullable — ISO-8601 timestamp of when the workflow started, set at workflow startup
+    final String workflowCreationTimestamp;
+    // elapsed seconds from workflow start to exit handler invocation
+    final long workflowDurationSeconds;
 
     private ExecutionContext(Builder b) {
         this.templateMap = b.templateMap;
@@ -155,6 +163,9 @@ final class ExecutionContext {
         this.globalOutputParams = b.globalOutputParams;
         this.globalOutputArtifacts = b.globalOutputArtifacts;
         this.workflowStatus = b.workflowStatus;
+        this.workflowName = b.workflowName;
+        this.workflowCreationTimestamp = b.workflowCreationTimestamp;
+        this.workflowDurationSeconds = b.workflowDurationSeconds;
     }
 
     static Builder builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
@@ -186,6 +197,9 @@ final class ExecutionContext {
         b.globalOutputParams = globalOutputParams;
         b.globalOutputArtifacts = globalOutputArtifacts;
         b.workflowStatus = workflowStatus;
+        b.workflowName = workflowName;
+        b.workflowCreationTimestamp = workflowCreationTimestamp;
+        b.workflowDurationSeconds = workflowDurationSeconds;
         return b;
     }
 
@@ -205,12 +219,18 @@ final class ExecutionContext {
                 .globalOutputParams(globalOutputParams)
                 .globalOutputArtifacts(globalOutputArtifacts)
                 .workflowStatus(workflowStatus)
+                .workflowName(workflowName)
+                .workflowCreationTimestamp(workflowCreationTimestamp)
+                .workflowDurationSeconds(workflowDurationSeconds)
                 .build();
     }
 
-    /** Returns a copy of this context with the workflow status set, used when running the exit handler. */
-    ExecutionContext withWorkflowStatus(String status) {
-        return toBuilder().workflowStatus(status).build();
+    /** Returns a copy of this context with workflow exit-handler variables set. */
+    ExecutionContext withWorkflowStatus(String status, long durationSeconds) {
+        return toBuilder()
+                .workflowStatus(status)
+                .workflowDurationSeconds(durationSeconds)
+                .build();
     }
 
     /**
@@ -336,10 +356,16 @@ final class ExecutionContext {
         result = applyPattern(result, INPUTS_PARAMETER, inputParams);
         result = applyPattern(result, WORKFLOW_PARAMETER, workflowParams);
         result = applyPattern(result, WORKFLOW_OUTPUT_PARAMETER, globalOutputParams);
+        if (workflowName != null) {
+            result = WORKFLOW_NAME_PATTERN.matcher(result).replaceAll(Matcher.quoteReplacement(workflowName));
+        }
+        if (workflowCreationTimestamp != null) {
+            result = WORKFLOW_CREATION_TIMESTAMP_PATTERN.matcher(result)
+                    .replaceAll(Matcher.quoteReplacement(workflowCreationTimestamp));
+        }
         if (workflowStatus != null) {
             result = WORKFLOW_STATUS_PATTERN.matcher(result).replaceAll(Matcher.quoteReplacement(workflowStatus));
-            result = WORKFLOW_NAME_PATTERN.matcher(result).replaceAll("");
-            result = WORKFLOW_DURATION_PATTERN.matcher(result).replaceAll("0");
+            result = WORKFLOW_DURATION_PATTERN.matcher(result).replaceAll(String.valueOf(workflowDurationSeconds));
             result = WORKFLOW_FAILURES_PATTERN.matcher(result).replaceAll("[]");
         }
         if (!result.equals(expr)) {
@@ -425,6 +451,9 @@ final class ExecutionContext {
         private ConcurrentHashMap<String, String> globalOutputParams = new ConcurrentHashMap<>();
         private ConcurrentHashMap<String, Path> globalOutputArtifacts = new ConcurrentHashMap<>();
         private String workflowStatus = null;
+        private String workflowName = null;
+        private String workflowCreationTimestamp = null;
+        private long workflowDurationSeconds = 0;
 
         private Builder(Map<String, Template> templateMap, Map<String, String> workflowParams,
                         ExecutorService threadPool) {
@@ -456,6 +485,9 @@ final class ExecutionContext {
         Builder globalOutputParams(ConcurrentHashMap<String, String> v) { this.globalOutputParams = v; return this; }
         Builder globalOutputArtifacts(ConcurrentHashMap<String, Path> v) { this.globalOutputArtifacts = v; return this; }
         Builder workflowStatus(String v) { this.workflowStatus = v; return this; }
+        Builder workflowName(String v) { this.workflowName = v; return this; }
+        Builder workflowCreationTimestamp(String v) { this.workflowCreationTimestamp = v; return this; }
+        Builder workflowDurationSeconds(long v) { this.workflowDurationSeconds = v; return this; }
 
         ExecutionContext build() { return new ExecutionContext(this); }
     }

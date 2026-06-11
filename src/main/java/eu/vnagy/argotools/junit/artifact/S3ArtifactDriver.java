@@ -38,6 +38,8 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 import org.slf4j.Logger;
@@ -86,6 +88,8 @@ public class S3ArtifactDriver implements ArtifactDriver {
                         .bucket(s3.getBucket())
                         .key(s3.getKey())
                         .build()).asByteArray();
+            } catch (NoSuchKeyException e) {
+                return downloadPrefix(client, s3, artifact, tempDir, e);
             } catch (Exception e) {
                 throw new IllegalStateException(
                         "S3 download failed — bucket=" + s3.getBucket()
@@ -100,7 +104,20 @@ public class S3ArtifactDriver implements ArtifactDriver {
                 return dest;
             } else {
                 Path destDir = Files.createTempDirectory(tempDir, "s3-in-");
-                extractTarGz(content, destDir);
+                try {
+                    extractTarGz(content, destDir);
+                } catch (IOException e) {
+                    // Only fall back to raw when the bytes don't start with gz magic (wrong format).
+                    // EOFException or other IOExceptions indicate a genuinely corrupt archive.
+                    if (e.getMessage() == null || !e.getMessage().contains("not in the .gz format")) {
+                        throw e;
+                    }
+                    log.debug("S3 download: artifact={} key={} — not a tar.gz, treating as raw",
+                            artifact.getName(), s3.getKey());
+                    Path dest = Files.createTempFile(tempDir, "s3-in-", "");
+                    Files.write(dest, content);
+                    return dest;
+                }
                 try (Stream<Path> ls = Files.list(destDir)) {
                     List<Path> rootEntries = ls.toList();
                     if (rootEntries.isEmpty()) throw new IllegalStateException(
@@ -119,22 +136,77 @@ public class S3ArtifactDriver implements ArtifactDriver {
             throws Exception {
         S3Artifact s3 = artifact.getS3();
         log.debug("S3 upload: artifact={} bucket={} key={} source={}", artifact.getName(), s3.getBucket(), s3.getKey(), source);
-        byte[] content = noArchive(artifact) ? Files.readAllBytes(source) : createTarGz(source);
         try (S3Client client = buildClient(s3, k8sClient, namespace)) {
-            try {
-                client.putObject(PutObjectRequest.builder()
-                        .bucket(s3.getBucket())
-                        .key(s3.getKey())
-                        .build(), RequestBody.fromBytes(content));
-            } catch (Exception e) {
-                throw new IllegalStateException(
-                        "S3 upload failed — bucket=" + s3.getBucket()
-                        + " key=" + s3.getKey()
-                        + " artifact=" + artifact.getName()
-                        + " source=" + source
-                        + ": " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()), e);
+            if (noArchive(artifact) && Files.isDirectory(source)) {
+                uploadDirectory(client, s3, source, artifact.getName());
+            } else {
+                byte[] content = noArchive(artifact) ? Files.readAllBytes(source) : createTarGz(source);
+                try {
+                    client.putObject(PutObjectRequest.builder()
+                            .bucket(s3.getBucket())
+                            .key(s3.getKey())
+                            .build(), RequestBody.fromBytes(content));
+                } catch (Exception e) {
+                    throw new IllegalStateException(
+                            "S3 upload failed — bucket=" + s3.getBucket()
+                            + " key=" + s3.getKey()
+                            + " artifact=" + artifact.getName()
+                            + " source=" + source
+                            + ": " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()), e);
+                }
             }
         }
+    }
+
+    private static void uploadDirectory(S3Client client, S3Artifact s3, Path dir,
+                                        String artifactName) throws IOException {
+        String prefix = s3.getKey().endsWith("/") ? s3.getKey() : s3.getKey() + "/";
+        try (Stream<Path> walk = Files.walk(dir)) {
+            for (Path file : walk.filter(Files::isRegularFile).toList()) {
+                String key = prefix + dir.relativize(file);
+                log.debug("S3 upload (dir): artifact={} key={}", artifactName, key);
+                try {
+                    client.putObject(PutObjectRequest.builder()
+                            .bucket(s3.getBucket())
+                            .key(key)
+                            .build(), RequestBody.fromBytes(Files.readAllBytes(file)));
+                } catch (Exception e) {
+                    throw new IllegalStateException(
+                            "S3 upload failed — bucket=" + s3.getBucket()
+                            + " key=" + key + " artifact=" + artifactName
+                            + ": " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()), e);
+                }
+            }
+        }
+    }
+
+    private static Path downloadPrefix(S3Client client, S3Artifact s3, Artifact artifact,
+                                       Path tempDir, NoSuchKeyException cause) throws IOException {
+        String prefix = s3.getKey().endsWith("/") ? s3.getKey() : s3.getKey() + "/";
+        log.debug("S3 download prefix: artifact={} bucket={} prefix={}", artifact.getName(), s3.getBucket(), prefix);
+        var list = client.listObjectsV2(ListObjectsV2Request.builder()
+                .bucket(s3.getBucket())
+                .prefix(prefix)
+                .build());
+        if (list.contents().isEmpty()) throw new IllegalStateException(
+                "S3 download failed — bucket=" + s3.getBucket()
+                + " key=" + s3.getKey()
+                + " artifact=" + artifact.getName()
+                + ": " + (cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName()),
+                cause);
+        Path destDir = Files.createTempDirectory(tempDir, "s3-in-");
+        for (var obj : list.contents()) {
+            String relKey = obj.key().substring(prefix.length());
+            if (relKey.isEmpty()) continue;
+            Path dest = destDir.resolve(relKey).normalize();
+            if (!dest.startsWith(destDir)) throw new IllegalStateException(
+                    "S3 key path traversal: " + obj.key());
+            Files.createDirectories(dest.getParent());
+            byte[] bytes = client.getObjectAsBytes(GetObjectRequest.builder()
+                    .bucket(s3.getBucket()).key(obj.key()).build()).asByteArray();
+            Files.write(dest, bytes);
+        }
+        return destDir;
     }
 
     private static boolean noArchive(Artifact artifact) {

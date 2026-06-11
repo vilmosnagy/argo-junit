@@ -229,14 +229,23 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                         spec.args().forEach((k, v) -> resolvedArgs.put(k, itemCtx.substitute(v, inputParams)));
                         injectDefaultParams(spec.taskTemplate(), itemCtx, inputParams, resolvedArgs);
 
-                        ExecutionContext podCtx = itemCtx.withRequestedOutputArtifacts(
-                                neededArtifacts.getOrDefault(spec.name(), Set.of()));
-
-                        WorkflowNode iterNode = WorkflowNode.from(
-                                spec.name() + "[" + i + "]", spec.taskTemplate(),
+                        String iterName = spec.name() + "[" + i + "]";
+                        WorkflowNode iterNode = WorkflowNode.from(iterName, spec.taskTemplate(),
                                 localCtx.templateMap, Set.of(originalTemplate.getName()),
                                 spec.childOwner());
-                        iterFutures.add(iterNode.executeAsync(podCtx, resolvedArgs));
+
+                        var artResult = resolveAndDownload(spec.artifactArgs(), itemCtx, inputParams,
+                                resolvedArgs, name, iterName);
+                        if (artResult.error() != null) {
+                            if (iterNode instanceof PodRun pod) pod.errorWith(artResult.error());
+                            iterFutures.add(CompletableFuture.completedFuture(iterNode));
+                        } else {
+                            ExecutionContext podCtx = (artResult.resolved().isEmpty()
+                                    ? itemCtx : itemCtx.withInputArtifacts(artResult.resolved()))
+                                    .withRequestedOutputArtifacts(
+                                            neededArtifacts.getOrDefault(spec.name(), Set.of()));
+                            iterFutures.add(iterNode.executeAsync(podCtx, resolvedArgs));
+                        }
                     }
 
                     List<String> labels = List.copyOf(itemLabels);

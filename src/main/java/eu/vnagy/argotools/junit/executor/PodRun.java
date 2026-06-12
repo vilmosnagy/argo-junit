@@ -61,10 +61,30 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ThreadLocalRandom;
 
 public final class PodRun implements WorkflowNode {
 
     private static final Logger log = LoggerFactory.getLogger(PodRun.class);
+
+    private static final char[] SUFFIX_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
+    private static final int MAX_CONTAINER_NAME = 60;
+
+    /** Builds a container name: {@code {wf-name}_{pod-name}_{5-char-random}}.
+     *  Sanitizes non-allowed chars to {@code -} and truncates the workflow prefix if needed. */
+    static String containerName(String workflowName, String podName) {
+        String safeWf  = (workflowName != null ? workflowName : "wf").replaceAll("[^a-zA-Z0-9_.-]", "-");
+        String safePod = podName.replaceAll("[^a-zA-Z0-9_.-]", "-");
+        char[] rand = new char[5];
+        for (int i = 0; i < rand.length; i++) rand[i] = SUFFIX_CHARS[ThreadLocalRandom.current().nextInt(SUFFIX_CHARS.length)];
+        String suffix = new String(rand);
+        // fixed part: _{pod}_{suffix}  (2 underscores + pod + suffix)
+        String tail = "_" + safePod + "_" + suffix;
+        if (safeWf.length() + tail.length() <= MAX_CONTAINER_NAME)
+            return safeWf + tail;
+        int wfBudget = MAX_CONTAINER_NAME - tail.length();
+        return (wfBudget > 0 ? safeWf.substring(0, wfBudget) : "") + tail;
+    }
 
     public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, ERRORED, SKIPPED, OMITTED, DAEMONED }
 
@@ -466,6 +486,8 @@ public final class PodRun implements WorkflowNode {
         GenericContainer<?> cont = ctx.containerFactory != null
                 ? ctx.containerFactory.apply(DockerImageName.parse(resolvedImage))
                 : new GenericContainer<>(DockerImageName.parse(resolvedImage));
+        String cName = containerName(ctx.workflowName, name);
+        cont.withCreateContainerCmdModifier(cmd -> cmd.withName(cName));
         if (resolvedScript != null) {
             // Script template: override the image ENTRYPOINT with the template's command array
             // so that a baked-in ENTRYPOINT does not prepend itself to the invocation.

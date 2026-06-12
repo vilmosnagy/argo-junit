@@ -168,6 +168,9 @@ public final class WorkflowSummary {
 
     private static String duration(WorkflowNode node) {
         if (node instanceof PodRun pod && !pod.skipped() && !pod.omitted()) {
+            if (pod.running() && pod.startedAt() != null) {
+                return formatDuration(Duration.between(pod.startedAt(), java.time.Instant.now()));
+            }
             return formatDuration(pod.duration());
         }
         return "";

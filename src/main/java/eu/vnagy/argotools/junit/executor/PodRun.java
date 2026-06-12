@@ -131,6 +131,7 @@ public final class PodRun implements WorkflowNode {
     private volatile String outputResult;
     private volatile String ip;
     private volatile GenericContainer<?> container;
+    private volatile Instant startedAt;
     private volatile Duration duration;
     private volatile boolean daemonStopped;
     private volatile int attempts;
@@ -653,6 +654,7 @@ public final class PodRun implements WorkflowNode {
 
         this.status = Status.RUNNING;
         Instant start = Instant.now();
+        this.startedAt = start;
         cont.start();
         String rawId = cont.getContainerId();
         String shortId = rawId != null ? rawId.substring(0, Math.min(12, rawId.length())) : null;
@@ -880,6 +882,7 @@ public final class PodRun implements WorkflowNode {
     public int attempts()                    { return attempts; }
     /** Per-attempt execution records, in run order. Empty for skipped/omitted/pending pods. */
     public List<Attempt> podAttempts()       { return List.copyOf(podAttempts); }
+    public Instant startedAt()                          { return startedAt; }
     public Map<String, Path> collectedArtifacts()      { return collectedArtifacts; }
     public Map<String, String> collectedOutputParams() { return collectedOutputParams; }
     /** The stopped container. Logs and state remain accessible until Ryuk removes it. */

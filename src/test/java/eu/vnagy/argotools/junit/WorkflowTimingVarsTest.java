@@ -24,6 +24,8 @@ import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import eu.vnagy.argotools.junit.executor.PodRun;
 import eu.vnagy.argotools.junit.executor.StepsRun;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
+import eu.vnagy.argotools.junit.model.Workflow;
+import eu.vnagy.argotools.junit.testutil.WorkflowReleaseGate;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -32,6 +34,7 @@ import java.time.Duration;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.matchesPattern;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Verifies that {{workflow.creationTimestamp}} and {{workflow.duration}} are substituted
@@ -54,21 +57,38 @@ class WorkflowTimingVarsTest {
 
     @Test
     void timingVarsAreSubstitutedInExitHandler() throws Exception {
-        try (WorkflowRun run = ArgoWorkflowExecutor
-                .from(Path.of(getClass().getResource("/workflow-timing-vars.yaml").toURI()))
-                .execute(Duration.ofMinutes(10))) {
+        try (var gate = new WorkflowReleaseGate()) {
+            Workflow wf = ArgoWorkflowExecutor.yamlMapper().readValue(
+                    getClass().getResource("/workflow-timing-vars.yaml"), Workflow.class);
+            wf.getSpec().getArguments().getParameters().stream()
+                    .filter(p -> "release_port".equals(p.getName())).findFirst().orElseThrow()
+                    .setValue(String.valueOf(gate.port()));
 
-            assertThat(run.succeeded(), is(true));
+            WorkflowRun live = ArgoWorkflowExecutor.from(wf).executeAsync();
+            PodRun main = (PodRun) live.entrypoint();
 
-            StepsRun onExit = (StepsRun) run.exitHandler();
+            long deadline = System.currentTimeMillis() + 60_000;
+            while (!main.running()) {
+                if (System.currentTimeMillis() > deadline) fail("main did not start within 60s");
+                Thread.sleep(100);
+            }
+
+            // Let the workflow accumulate at least 2 seconds before releasing
+            Thread.sleep(2_000);
+            gate.release();
+
+            live.await(Duration.ofMinutes(10));
+            assertThat(live.succeeded(), is(true));
+
+            StepsRun onExit = (StepsRun) live.exitHandler();
             PodRun report = (PodRun) onExit.get("report");
             String logs = report.logs();
 
             // creationTimestamp must be an ISO-8601 datetime, not the raw expression
             assertThat(logs, matchesPattern("(?s).*ts=\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*"));
 
-            // duration must be a positive integer (real elapsed seconds), not the stub "0"
-            assertThat(logs, matchesPattern("(?s).*dur=[1-9]\\d*.*"));
+            // duration must be >= 2s (guaranteed by the gate delay above)
+            assertThat(logs, matchesPattern("(?s).*dur=[2-9]\\d*.*"));
         }
     }
 }

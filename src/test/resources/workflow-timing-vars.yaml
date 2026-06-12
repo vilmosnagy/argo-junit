@@ -5,12 +5,26 @@ metadata:
 spec:
   entrypoint: main
   onExit: on-exit
+  arguments:
+    parameters:
+    - name: release_port
+      value: "0"
   templates:
   - name: main
-    container:
-      image: alpine:3.23
-      command: [sh, -c]
-      args: ["echo main done"]
+    script:
+      image: python:alpine3.23
+      command: [python3]
+      source: |
+        import urllib.request, time
+        while True:
+            try:
+                urllib.request.urlopen(
+                    'http://host.testcontainers.internal:{{workflow.parameters.release_port}}/ready',
+                    timeout=1)
+                break
+            except Exception:
+                pass
+            time.sleep(0.1)
 
   - name: on-exit
     steps:

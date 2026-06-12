@@ -30,6 +30,7 @@ import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Workflow;
 import eu.vnagy.argotools.junit.testutil.MinioContainer;
 import eu.vnagy.argotools.junit.testutil.RetryOutcomeGate;
+import eu.vnagy.argotools.junit.testutil.WorkflowReleaseGate;
 import eu.vnagy.argotools.junit.util.WorkflowSummary;
 import eu.vnagy.argotools.junit.testutil.LoggerExtension;
 import io.fabric8.kubernetes.api.model.SecretBuilder;
@@ -54,8 +55,11 @@ import java.nio.file.Path;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.anyOf;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.fail;
 import java.time.Duration;
 
 class WorkflowSummaryTest {
@@ -1060,11 +1064,80 @@ class WorkflowSummaryTest {
         }
     }
 
+    @Test
+    void inProgressLeafShowsRunningDuration() throws Exception {
+        try (var gate = new WorkflowReleaseGate()) {
+            Workflow wf = ArgoWorkflowExecutor.yamlMapper().readValue("""
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      name: summary-in-progress-test
+                    spec:
+                      arguments:
+                        parameters:
+                          - name: release_port
+                            value: "0"
+                      entrypoint: waiter
+                      templates:
+                        - name: waiter
+                          script:
+                            image: python:alpine3.23
+                            command: [python3]
+                            source: |
+                              import urllib.request, time
+                              while True:
+                                  try:
+                                      urllib.request.urlopen(
+                                          'http://host.testcontainers.internal:{{workflow.parameters.release_port}}/ready',
+                                          timeout=1)
+                                      break
+                                  except Exception:
+                                      pass
+                                  time.sleep(0.1)
+                    """, Workflow.class);
+            setParam(wf, "release_port", String.valueOf(gate.port()));
+
+            WorkflowRun live = ArgoWorkflowExecutor.from(wf).executeAsync();
+            PodRun pod = (PodRun) live.entrypoint();
+
+            long deadline = System.currentTimeMillis() + 60_000;
+            while (!pod.running()) {
+                if (System.currentTimeMillis() > deadline) fail("pod did not start within 60s");
+                Thread.sleep(100);
+            }
+
+            // Let the pod accumulate at least 2 seconds of runtime before snapshotting
+            Thread.sleep(2_000);
+
+            String summary = WorkflowSummary.format(live);
+
+            assertThat("running pod shows ◷ icon", summary, containsString("◷"));
+            assertThat("in-progress duration is at least 2s",
+                    readDurationSeconds(summary, "waiter"), greaterThanOrEqualTo(2L));
+
+            gate.release();
+            live.await(Duration.ofMinutes(10));
+            assertThat("workflow succeeded after release", live.succeeded(), is(true));
+        }
+    }
+
     private static void setParam(Workflow wf, String name, String value) {
         wf.getSpec().getArguments().getParameters().stream()
                 .filter(p -> name.equals(p.getName()))
                 .findFirst().orElseThrow()
                 .setValue(value);
+    }
+
+    /** Extracts the duration in seconds from the summary line for {@code stepName}, or -1 if not found. */
+    private static long readDurationSeconds(String summary, String stepName) {
+        for (String line : summary.split("\n")) {
+            if (!line.contains(stepName)) continue;
+            var m = java.util.regex.Pattern.compile("(\\d+)m (\\d+)s|(\\d+)s").matcher(line);
+            if (!m.find()) return -1;
+            if (m.group(3) != null) return Long.parseLong(m.group(3));
+            return Long.parseLong(m.group(1)) * 60 + Long.parseLong(m.group(2));
+        }
+        return -1;
     }
 
     private static String normalizeDurations(String summary) {

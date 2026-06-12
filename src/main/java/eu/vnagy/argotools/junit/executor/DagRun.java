@@ -327,7 +327,8 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                         this.tasks = Collections.unmodifiableMap(updated);
                     }
 
-                    resolveOutputArtifacts(localCtx, inputParams);
+                    resolveOutputArtifacts(localCtx, inputParams,
+                            localCtx.taskArtifacts, localCtx.taskOutputResults);
                     resolveOutputParameters(localCtx, inputParams);
                     return (WorkflowNode) this;
                 });

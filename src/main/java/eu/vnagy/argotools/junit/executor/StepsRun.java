@@ -186,7 +186,8 @@ public final class StepsRun extends BaseCompositeRun implements WorkflowNode {
                 }))
                 .thenApply(_ -> {
                     log.debug("Steps '{}': all groups completed", name);
-                    resolveOutputArtifacts(localCtx, inputParams);
+                    resolveOutputArtifacts(localCtx, inputParams,
+                            localCtx.stepArtifacts, localCtx.stepOutputResults);
                     resolveOutputParameters(localCtx, inputParams);
                     return (WorkflowNode) this;
                 });

@@ -112,7 +112,7 @@ public final class ExpressionEngine {
             String expression,
             Map<String, String> inputParams,
             Map<String, Map<String, String>> taskOutputParams) {
-        JexlContext ctx = buildContext(inputParams, taskOutputParams, null);
+        JexlContext ctx = buildContext(inputParams, taskOutputParams, null, null);
         try {
             Object result = JEXL.createExpression(expression).evaluate(ctx);
             return result != null ? String.valueOf(result) : null;
@@ -123,13 +123,17 @@ public final class ExpressionEngine {
     }
 
     /**
-     * Evaluates a {@code fromExpression} on a DAG output artifact.
+     * Evaluates a {@code fromExpression} on a DAG/Steps output artifact.
      *
      * <p>The expression may reference:
      * <ul>
-     *   <li>{@code inputs.parameters['name']} — the DAG template's own input parameters</li>
-     *   <li>{@code tasks['task-name'].outputs.artifacts['name']} — a child task's output artifact path</li>
+     *   <li>{@code inputs.parameters['name']} — the template's own input parameters</li>
+     *   <li>{@code tasks['name'].outputs.artifacts['name']} or {@code tasks.name.outputs.artifacts.name}
+     *       — a child task's output artifact path (dot and bracket notation both work)</li>
+     *   <li>{@code steps['name'].outputs.result} or {@code tasks['name'].outputs.result}
+     *       — a child's stdout result (exposed as {@code outputs.result})</li>
      * </ul>
+     * {@code steps} and {@code tasks} are interchangeable — both resolve against the same child map.
      *
      * @return the resolved artifact {@link Path}, or {@code null} if the expression returns null
      * @throws IllegalArgumentException if the expression doesn't resolve to a Path
@@ -137,8 +141,9 @@ public final class ExpressionEngine {
     public static Path evaluateOutputArtifactExpression(
             String expression,
             Map<String, String> inputParams,
-            Map<String, Map<String, Path>> taskArtifacts) {
-        JexlContext ctx = buildContext(inputParams, null, taskArtifacts);
+            Map<String, Map<String, Path>> childArtifacts,
+            Map<String, String> childOutputResults) {
+        JexlContext ctx = buildContext(inputParams, null, childArtifacts, childOutputResults);
         try {
             Object result = JEXL.createExpression(expression).evaluate(ctx);
             if (result == null) return null;
@@ -155,47 +160,63 @@ public final class ExpressionEngine {
     }
 
     /**
-     * Builds a JEXL context with {@code inputs} and {@code tasks} variables for output expressions.
+     * Builds a JEXL context with {@code inputs}, {@code tasks}, and {@code steps} variables.
      *
      * <ul>
      *   <li>{@code inputs.parameters} → the given inputParams map</li>
-     *   <li>{@code tasks['t'].outputs.parameters} → per-task output param maps (when non-null)</li>
-     *   <li>{@code tasks['t'].outputs.artifacts} → per-task output artifact maps (when non-null)</li>
+     *   <li>{@code tasks['t'].outputs.parameters} → per-child output param maps (when non-null)</li>
+     *   <li>{@code tasks['t'].outputs.artifacts} → per-child output artifact maps (when non-null)</li>
+     *   <li>{@code tasks['t'].outputs.result} → per-child stdout result (when non-null)</li>
+     *   <li>{@code steps} → same map as {@code tasks}; both are always set so expressions work
+     *       regardless of whether the enclosing template is a DAG or Steps template</li>
      * </ul>
      */
     private static JexlContext buildContext(
             Map<String, String> inputParams,
-            Map<String, Map<String, String>> taskOutputParams,
-            Map<String, Map<String, Path>> taskArtifacts) {
+            Map<String, Map<String, String>> childOutputParams,
+            Map<String, Map<String, Path>> childArtifacts,
+            Map<String, String> childOutputResults) {
 
         Map<String, Object> inputsMap = new HashMap<>();
         inputsMap.put("parameters", new HashMap<>(inputParams));
 
-        Map<String, Object> tasksMap = new HashMap<>();
-        if (taskOutputParams != null) {
-            taskOutputParams.forEach((taskName, params) -> {
+        Map<String, Object> childrenMap = new HashMap<>();
+        if (childOutputParams != null) {
+            childOutputParams.forEach((childName, params) -> {
                 Map<String, Object> outputs = new HashMap<>();
                 outputs.put("parameters", new HashMap<>(params));
-                Map<String, Object> task = new HashMap<>();
-                task.put("outputs", outputs);
-                tasksMap.put(taskName, task);
+                Map<String, Object> child = new HashMap<>();
+                child.put("outputs", outputs);
+                childrenMap.put(childName, child);
             });
         }
-        if (taskArtifacts != null) {
-            taskArtifacts.forEach((taskName, artifacts) -> {
+        if (childArtifacts != null) {
+            childArtifacts.forEach((childName, artifacts) -> {
                 @SuppressWarnings("unchecked")
-                Map<String, Object> task = (Map<String, Object>) tasksMap.computeIfAbsent(
-                        taskName, k -> new HashMap<>());
+                Map<String, Object> child = (Map<String, Object>) childrenMap.computeIfAbsent(
+                        childName, k -> new HashMap<>());
                 @SuppressWarnings("unchecked")
-                Map<String, Object> outputs = (Map<String, Object>) task.computeIfAbsent(
+                Map<String, Object> outputs = (Map<String, Object>) child.computeIfAbsent(
                         "outputs", k -> new HashMap<>());
                 outputs.put("artifacts", new HashMap<>(artifacts));
+            });
+        }
+        if (childOutputResults != null) {
+            childOutputResults.forEach((childName, result) -> {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> child = (Map<String, Object>) childrenMap.computeIfAbsent(
+                        childName, k -> new HashMap<>());
+                @SuppressWarnings("unchecked")
+                Map<String, Object> outputs = (Map<String, Object>) child.computeIfAbsent(
+                        "outputs", k -> new HashMap<>());
+                outputs.put("result", result);
             });
         }
 
         MapContext ctx = new MapContext();
         ctx.set("inputs", inputsMap);
-        ctx.set("tasks", tasksMap);
+        ctx.set("tasks", childrenMap);
+        ctx.set("steps", childrenMap);  // same map — expressions work for both DAG and Steps templates
         return ctx;
     }
 }

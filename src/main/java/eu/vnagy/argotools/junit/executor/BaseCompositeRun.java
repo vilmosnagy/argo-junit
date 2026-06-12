@@ -332,8 +332,14 @@ abstract class BaseCompositeRun {
         return Collections.unmodifiableMap(immutable);
     }
 
-    private static final java.util.regex.Pattern TASK_ARTIFACT_IN_EXPRESSION =
-            java.util.regex.Pattern.compile("tasks\\['([^']+)'\\]\\.outputs\\.artifacts\\['([^']+)'\\]");
+    // Matches both bracket and dot notation for tasks/steps artifact references in fromExpression.
+    // Groups: (1) bracket-name or (2) dot-name for the child; (3) bracket-name or (4) dot-name for the artifact.
+    private static final java.util.regex.Pattern CHILD_ARTIFACT_IN_EXPRESSION =
+            java.util.regex.Pattern.compile(
+                    "(?:tasks|steps)" +
+                    "(?:\\['([^']+)'\\]|\\.([\\w][\\w-]*))" +
+                    "\\.outputs\\.artifacts" +
+                    "(?:\\['([^']+)'\\]|\\.([\\w][\\w-]*))");
 
     private void addNeeded(Artifact art, Pattern fromPattern, Map<String, Set<String>> needed) {
         if (art.getFrom() != null) {
@@ -341,9 +347,11 @@ abstract class BaseCompositeRun {
             if (m.matches()) needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
         }
         if (art.getFromExpression() != null) {
-            var m = TASK_ARTIFACT_IN_EXPRESSION.matcher(art.getFromExpression());
+            var m = CHILD_ARTIFACT_IN_EXPRESSION.matcher(art.getFromExpression());
             while (m.find()) {
-                needed.computeIfAbsent(m.group(1), k -> new LinkedHashSet<>()).add(m.group(2));
+                String childName    = m.group(1) != null ? m.group(1) : m.group(2);
+                String artifactName = m.group(3) != null ? m.group(3) : m.group(4);
+                needed.computeIfAbsent(childName, k -> new LinkedHashSet<>()).add(artifactName);
             }
         }
     }
@@ -351,9 +359,11 @@ abstract class BaseCompositeRun {
     /**
      * Resolves {@code outputs.artifacts} declared on the original template and stores them in
      * {@link #collectedArtifacts}. Handles both {@code from:} references and {@code fromExpression}.
-     * Subclasses call this at the end of each iteration.
+     * Subclasses call this at the end of each iteration, passing their own child-scoped maps.
      */
-    protected void resolveOutputArtifacts(ExecutionContext localCtx, Map<String, String> inputParams) {
+    protected void resolveOutputArtifacts(ExecutionContext localCtx, Map<String, String> inputParams,
+            Map<String, Map<String, Path>> childArtifacts,
+            Map<String, String> childOutputResults) {
         if (originalTemplate.getOutputs() == null
                 || originalTemplate.getOutputs().getArtifacts() == null) return;
         Map<String, Path> outputs = new LinkedHashMap<>();
@@ -362,7 +372,7 @@ abstract class BaseCompositeRun {
                 localCtx.resolveArtifactFrom(art.getFrom()).ifPresent(p -> outputs.put(art.getName(), p));
             } else if (art.getFromExpression() != null) {
                 Path resolved = ExpressionEngine.evaluateOutputArtifactExpression(
-                        art.getFromExpression(), inputParams, localCtx.taskArtifacts);
+                        art.getFromExpression(), inputParams, childArtifacts, childOutputResults);
                 if (resolved != null) outputs.put(art.getName(), resolved);
             }
         }

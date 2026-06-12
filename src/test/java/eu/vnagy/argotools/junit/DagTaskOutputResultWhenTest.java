@@ -54,7 +54,7 @@ class DagTaskOutputResultWhenTest {
             assertThat("path-a output", pathA.logs().trim(), containsString("took path A"));
 
             PodRun pathB = (PodRun) dag.get("path-b");
-            assertThat("path-b omitted", pathB.omitted(), is(true));
+            assertThat("path-b skipped", pathB.skipped(), is(true));
         }
     }
 }

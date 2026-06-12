@@ -27,18 +27,26 @@ import java.util.concurrent.CompletableFuture;
 /**
  * Result container for a DAG task that was fanned out via {@code withParam} or {@code withItems}.
  * Each element of {@link #children()} is one iteration's {@link WorkflowNode}.
- * An empty iterations list means the task was omitted (zero items or skipped by depends/when).
+ * An empty iterations list means the task produced no output — either because its
+ * {@code depends} expression was not satisfied ({@link #omitted()} = true) or because
+ * its {@code when} condition was false ({@link #skipped()} = true).
  */
 public final class ItemRun implements WorkflowNode {
 
     private final String name;
     private final List<WorkflowNode> iterations;
     private final List<String> itemLabels;
+    private final boolean skippedByWhen;
 
     ItemRun(String name, List<WorkflowNode> iterations, List<String> itemLabels) {
+        this(name, iterations, itemLabels, false);
+    }
+
+    ItemRun(String name, List<WorkflowNode> iterations, List<String> itemLabels, boolean skippedByWhen) {
         this.name = name;
         this.iterations = List.copyOf(iterations);
         this.itemLabels = List.copyOf(itemLabels);
+        this.skippedByWhen = skippedByWhen;
     }
 
     @Override public String name() { return name; }
@@ -54,8 +62,8 @@ public final class ItemRun implements WorkflowNode {
         return !iterations.isEmpty() && iterations.stream().allMatch(WorkflowNode::failed);
     }
     @Override public boolean errored()  { return iterations.stream().anyMatch(WorkflowNode::errored); }
-    @Override public boolean omitted()  { return iterations.isEmpty(); }
-    @Override public boolean skipped()  { return false; }
+    @Override public boolean omitted()  { return iterations.isEmpty() && !skippedByWhen; }
+    @Override public boolean skipped()  { return skippedByWhen; }
     @Override public boolean daemoned() { return false; }
     @Override public boolean running()  { return false; }
     @Override public boolean pending()  { return false; }

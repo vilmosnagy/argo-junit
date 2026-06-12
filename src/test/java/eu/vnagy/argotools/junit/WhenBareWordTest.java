@@ -60,7 +60,7 @@ class WhenBareWordTest {
                 """).execute(Duration.ofMinutes(5))) {
 
             assertThat("workflow succeeded", run.succeeded(), is(true));
-            assertThat("check omitted", ((DagRun) run.entrypoint()).get("check").omitted(), is(true));
+            assertThat("check skipped", ((DagRun) run.entrypoint()).get("check").skipped(), is(true));
         }
     }
 
@@ -88,7 +88,7 @@ class WhenBareWordTest {
                 """).execute(Duration.ofMinutes(5))) {
 
             assertThat("workflow succeeded", run.succeeded(), is(true));
-            assertThat("check omitted", ((DagRun) run.entrypoint()).get("check").omitted(), is(true));
+            assertThat("check skipped", ((DagRun) run.entrypoint()).get("check").skipped(), is(true));
         }
     }
 }

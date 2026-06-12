@@ -53,7 +53,7 @@ class DagTaskWhenTest {
             assertThat("run-a output", runA.logs().trim(), containsString("ran-a"));
 
             PodRun runB = (PodRun) dag.get("run-b");
-            assertThat("run-b omitted", runB.omitted(), is(true));
+            assertThat("run-b skipped", runB.skipped(), is(true));
         }
     }
 

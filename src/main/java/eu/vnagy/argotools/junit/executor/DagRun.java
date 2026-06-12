@@ -202,8 +202,8 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                     if (spec.when() != null && !spec.when().isBlank()) {
                         String evaluated = localCtx.substitute(spec.when(), inputParams);
                         if (!localCtx.evaluateWhen(evaluated)) {
-                            log.debug("Dag '{}': loop task '{}' omitted by when expression", name, spec.name());
-                            return CompletableFuture.completedFuture(new ItemRun(spec.name(), List.of(), List.of()));
+                            log.debug("Dag '{}': loop task '{}' skipped by when expression", name, spec.name());
+                            return CompletableFuture.completedFuture(new ItemRun(spec.name(), List.of(), List.of(), true));
                         }
                     }
 
@@ -282,8 +282,8 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                     whenParams.putAll(resolvedArgs);
                     String evaluated = localCtx.substitute(spec.when(), whenParams);
                     if (!localCtx.evaluateWhen(evaluated)) {
-                        log.debug("Dag '{}': task '{}' omitted by when expression", name, spec.name());
-                        currentTasks.get(spec.name()).omit();
+                        log.debug("Dag '{}': task '{}' skipped by when expression", name, spec.name());
+                        currentTasks.get(spec.name()).skip();
                         return CompletableFuture.completedFuture(currentTasks.get(spec.name()));
                     }
                 }

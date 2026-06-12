@@ -80,10 +80,16 @@ public final class PodRun implements WorkflowNode {
         String suffix = new String(rand);
         // fixed part: _{pod}_{suffix}  (2 underscores + pod + suffix)
         String tail = "_" + safePod + "_" + suffix;
+        String result;
         if (safeWf.length() + tail.length() <= MAX_CONTAINER_NAME)
-            return safeWf + tail;
-        int wfBudget = MAX_CONTAINER_NAME - tail.length();
-        return (wfBudget > 0 ? safeWf.substring(0, wfBudget) : "") + tail;
+            result = safeWf + tail;
+        else {
+            int wfBudget = MAX_CONTAINER_NAME - tail.length();
+            result = (wfBudget > 0 ? safeWf.substring(0, wfBudget) : "") + tail;
+        }
+        if (!result.isEmpty() && !Character.isLetterOrDigit(result.charAt(0)))
+            result = "p" + result.substring(1);
+        return result;
     }
 
     public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED, ERRORED, SKIPPED, OMITTED, DAEMONED }
@@ -295,6 +301,16 @@ public final class PodRun implements WorkflowNode {
                 run(ctx, inputParams);
             } catch (Exception e) {
                 log.error("Pod '{}': execution error", name, e);
+                GenericContainer<?> c = this.container;
+                if (c != null) {
+                    try {
+                        String output = c.getLogs();
+                        if (output != null && !output.isBlank())
+                            log.error("Pod '{}': container output:\n{}", name, output.trim());
+                    } catch (Exception logEx) {
+                        log.debug("Pod '{}': container output not available: {}", name, logEx.getMessage());
+                    }
+                }
                 this.status = Status.ERRORED;
                 this.message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             }
@@ -501,6 +517,7 @@ public final class PodRun implements WorkflowNode {
         GenericContainer<?> cont = ctx.containerFactory != null
                 ? ctx.containerFactory.apply(DockerImageName.parse(resolvedImage))
                 : new GenericContainer<>(DockerImageName.parse(resolvedImage));
+        this.container = cont;
         String cName = containerName(ctx.workflowName, name);
         cont.withCreateContainerCmdModifier(cmd -> cmd.withName(cName));
         if (resolvedScript != null) {

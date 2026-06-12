@@ -18,7 +18,7 @@ Only create commits when a human explicitly asks for one.
 
 ## Test packages
 
-New tests go in the package that matches their nature:
+This project has no unit tests — every test runs real containers via Testcontainers. New tests go in the package that matches their nature:
 
  - **`io.github.argoproj.argoworkflows`** — for tests that run upstream Argo example workflows sourced from `src/test/resources/examples` (the submodule symlink). No custom infrastructure, no custom fixtures.
  - **`eu.vnagy.argotools.junit`** — for tests of executor features, edge cases, gate-controlled scenarios, or anything that requires custom YAML fixtures. Custom fixtures go under `src/test/resources/` (not `examples/`).

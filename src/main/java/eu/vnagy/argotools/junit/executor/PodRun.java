@@ -116,6 +116,7 @@ public final class PodRun implements WorkflowNode {
     private final List<ArtifactSpec> outputArtifactSpecs;
     private final List<OutputParamSpec> outputParamSpecs;
     private final List<ArtifactSpec> inputArtifactDecls;
+    private final Map<String, String> artifactPathPlaceholders;
     private final List<ConfigMapRef> configMapRefs;
     private final Map<String, String> plainEnv;
     private final List<EnvRef> envRefs;
@@ -197,6 +198,16 @@ public final class PodRun implements WorkflowNode {
             }
         }
         this.inputArtifactDecls = List.copyOf(ins);
+
+        // Artifact/param path placeholders — resolved at plan time from declared paths
+        Map<String, String> pathPlaceholders = new LinkedHashMap<>();
+        for (ArtifactSpec decl : ins)
+            pathPlaceholders.put("{{inputs.artifacts." + decl.name() + ".path}}", decl.path());
+        for (ArtifactSpec spec : outs)
+            pathPlaceholders.put("{{outputs.artifacts." + spec.name() + ".path}}", spec.path());
+        for (OutputParamSpec spec : outParams)
+            pathPlaceholders.put("{{outputs.parameters." + spec.name() + ".path}}", spec.path());
+        this.artifactPathPlaceholders = Map.copyOf(pathPlaceholders);
 
         // configMapKeyRef input parameters — resolved from the Kubernetes API at runtime
         List<ConfigMapRef> cmRefs = new ArrayList<>();
@@ -305,9 +316,12 @@ public final class PodRun implements WorkflowNode {
         }
 
         String resolvedImage = ctx.substitute(image, inputParams);
-        List<String> resolvedCommand = ctx.substituteAll(command, inputParams);
-        List<String> resolvedContainerArgs = ctx.substituteAll(containerArgs, inputParams);
-        String resolvedScript = scriptSource != null ? ctx.substitute(scriptSource, inputParams) : null;
+        List<String> resolvedCommand = ctx.substituteAll(command, inputParams)
+                .stream().map(this::substituteArtifactPaths).toList();
+        List<String> resolvedContainerArgs = ctx.substituteAll(containerArgs, inputParams)
+                .stream().map(this::substituteArtifactPaths).toList();
+        String resolvedScript = scriptSource != null
+                ? substituteArtifactPaths(ctx.substitute(scriptSource, inputParams)) : null;
 
         if (resolvedScript != null) {
             log.debug("Pod '{}': starting image='{}' entrypoint={} script=/tmp/script",
@@ -321,7 +335,7 @@ public final class PodRun implements WorkflowNode {
         Map<String, String> resolvedEnv = new LinkedHashMap<>();
         // Plain value entries (may still contain inputs.parameters placeholders)
         for (var e : plainEnv.entrySet()) {
-            resolvedEnv.put(e.getKey(), ctx.substitute(e.getValue(), inputParams));
+            resolvedEnv.put(e.getKey(), substituteArtifactPaths(ctx.substitute(e.getValue(), inputParams)));
         }
         // Ref-based entries resolved from ConfigMap / Secret (override plain if same name)
         for (EnvRef ref : envRefs) {
@@ -778,6 +792,12 @@ public final class PodRun implements WorkflowNode {
             Files.createDirectories(target.getParent());
             Files.write(target, value);
         }
+    }
+
+    private String substituteArtifactPaths(String s) {
+        for (var e : artifactPathPlaceholders.entrySet())
+            s = s.replace(e.getKey(), e.getValue());
+        return s;
     }
 
     private String readFileFromContainer(GenericContainer<?> cont, String containerPath) throws Exception {

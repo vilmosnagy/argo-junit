@@ -642,7 +642,16 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 .followRedirects(HttpClient.Redirect.ALWAYS)
                 .build();
         for (Artifact a : workflow.getSpec().getArguments().getArtifacts()) {
-            if (a.getHttp() != null && a.getHttp().getUrl() != null) {
+            if (a.getRaw() != null && a.getRaw().getData() != null) {
+                try {
+                    Path dest = Files.createTempFile(tmpDir, "artifact-" + a.getName() + "-", "");
+                    Files.writeString(dest, a.getRaw().getData());
+                    downloaded.put(a.getName(), dest);
+                } catch (Exception e) {
+                    throw new IllegalStateException(
+                            "Failed to materialize raw artifact '" + a.getName() + "'", e);
+                }
+            } else if (a.getHttp() != null && a.getHttp().getUrl() != null) {
                 String url = a.getHttp().getUrl();
                 log.debug("Downloading HTTP artifact '{}' from {}", a.getName(), url);
                 try {

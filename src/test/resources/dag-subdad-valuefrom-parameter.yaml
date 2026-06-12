@@ -1,0 +1,60 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: subdad-valuefrom-parameter-
+spec:
+  entrypoint: outer
+  templates:
+
+    - name: outer
+      dag:
+        tasks:
+          - name: compute
+            template: compute-dag
+          - name: verify
+            template: verify-greeting
+            dependencies: [compute]
+            arguments:
+              parameters:
+                - name: greeting
+                  value: '{{tasks.compute.outputs.parameters.greeting}}'
+
+    # Sub-DAG that forwards its child's output parameter via valueFrom.parameter.
+    # If valueFrom.parameter is not resolved, the placeholder propagates into the
+    # downstream verify task's argument and causes it to fail.
+    - name: compute-dag
+      outputs:
+        parameters:
+          - name: greeting
+            valueFrom:
+              parameter: '{{tasks.inner.outputs.parameters.greeting}}'
+      dag:
+        tasks:
+          - name: inner
+            template: produce-greeting
+
+    - name: produce-greeting
+      script:
+        image: alpine:3
+        command: [sh]
+        source: echo -n 'hello-from-inner' > /tmp/greeting
+      outputs:
+        parameters:
+          - name: greeting
+            valueFrom:
+              path: /tmp/greeting
+
+    - name: verify-greeting
+      inputs:
+        parameters:
+          - name: greeting
+      script:
+        image: alpine:3
+        command: [sh]
+        source: |
+          GREETING='{{inputs.parameters.greeting}}'
+          if echo "$GREETING" | grep -q '{{'; then
+            echo "ERROR: placeholder not resolved: $GREETING" >&2
+            exit 1
+          fi
+          echo "greeting=$GREETING"

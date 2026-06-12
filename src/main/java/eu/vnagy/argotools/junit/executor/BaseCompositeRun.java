@@ -380,19 +380,29 @@ abstract class BaseCompositeRun {
     }
 
     /**
-     * Evaluates {@code outputs.parameters[].valueFrom.expression} on the original template and
-     * stores results in {@link #collectedOutputParams}. Subclasses call this at the end of each
-     * iteration.
+     * Resolves {@code outputs.parameters[].valueFrom} on the original template and stores
+     * results in {@link #collectedOutputParams}. Handles both:
+     * <ul>
+     *   <li>{@code valueFrom.expression} — evaluated via JEXL over child task outputs</li>
+     *   <li>{@code valueFrom.parameter} — a {@code {{tasks.X.outputs.parameters.Y}}} reference
+     *       substituted from the current context (used by nested DAG templates to forward a
+     *       child task's output parameter to the DAG's own outputs)</li>
+     * </ul>
+     * Subclasses call this at the end of each iteration.
      */
     protected void resolveOutputParameters(ExecutionContext localCtx, Map<String, String> inputParams) {
         if (originalTemplate.getOutputs() == null
                 || originalTemplate.getOutputs().getParameters() == null) return;
         Map<String, String> outputs = new LinkedHashMap<>();
         for (Parameter param : originalTemplate.getOutputs().getParameters()) {
-            if (param.getValueFrom() != null && param.getValueFrom().getExpression() != null) {
+            if (param.getValueFrom() == null) continue;
+            if (param.getValueFrom().getExpression() != null) {
                 String value = ExpressionEngine.evaluateOutputParamExpression(
                         param.getValueFrom().getExpression(), inputParams, localCtx.taskOutputParams);
                 if (value != null) outputs.put(param.getName(), value);
+            } else if (param.getValueFrom().getParameter() != null) {
+                String resolved = localCtx.substitute(param.getValueFrom().getParameter(), inputParams);
+                if (!resolved.contains("{{")) outputs.put(param.getName(), resolved);
             }
         }
         if (!outputs.isEmpty()) this.collectedOutputParams = Map.copyOf(outputs);

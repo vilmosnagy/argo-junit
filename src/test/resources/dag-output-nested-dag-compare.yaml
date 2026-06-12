@@ -1,0 +1,134 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: nested-dag-cache-or-build-
+spec:
+  arguments:
+    parameters:
+      - name: s3-endpoint
+        value: ''
+      - name: s3-bucket
+        value: ''
+      - name: s3-secret-name
+        value: ''
+  entrypoint: outer
+  templates:
+
+    # Outer DAG: runs the cache-or-build sub-DAG, then consumes the artifact using
+    # the resolved version in the S3 key.
+    - name: outer
+      dag:
+        tasks:
+          - name: cache-or-build
+            template: cache-or-build-dag
+          - name: consume
+            template: consume-artifact
+            dependencies: [cache-or-build]
+            arguments:
+              artifacts:
+                - name: artifact
+                  s3:
+                    endpoint: '{{workflow.parameters.s3-endpoint}}'
+                    insecure: true
+                    bucket: '{{workflow.parameters.s3-bucket}}'
+                    key: 'nested-dag-artifacts/{{tasks.cache-or-build.outputs.parameters.version}}.txt'
+                    accessKeySecret:
+                      name: '{{workflow.parameters.s3-secret-name}}'
+                      key: access-key
+                    secretKeySecret:
+                      name: '{{workflow.parameters.s3-secret-name}}'
+                      key: secret-key
+
+    # Sub-DAG with outputs.parameters.valueFrom.expression.
+    # The expression's true branch references download-and-upload-dag, which is itself
+    # a nested DAG that forwards its child's version via valueFrom.parameter.
+    # On cache miss (Run 1), download-and-upload-dag runs and must expose its version.
+    # On cache hit (Run 2), download-and-upload-dag is omitted and the else branch wins.
+    - name: cache-or-build-dag
+      outputs:
+        parameters:
+          - name: version
+            valueFrom:
+              expression: >-
+                tasks['check-cache'].outputs.parameters['version'] == '' ?
+                tasks['download-and-upload-dag'].outputs.parameters['version'] :
+                tasks['check-cache'].outputs.parameters['version']
+      dag:
+        tasks:
+          - name: check-cache
+            template: check-cache
+          - name: download-and-upload-dag
+            template: download-and-upload-dag
+            dependencies: [check-cache]
+            when: '"{{tasks.check-cache.outputs.parameters.version}}" == ""'
+
+    - name: check-cache
+      script:
+        image: alpine/k8s:1.36.0
+        command: [sh]
+        source: |
+          VERSION=$(kubectl get configmap version-cache-nested-dag \
+            -o jsonpath='{.data.version}' 2>/dev/null || true)
+          echo -n "${VERSION}" > /tmp/version
+      outputs:
+        parameters:
+          - name: version
+            valueFrom:
+              path: /tmp/version
+
+    # Nested DAG that forwards its inner task's version parameter via valueFrom.parameter.
+    # This matches the real-world pattern where create-and-upload-otp2-street-graph-to-s3
+    # is a DAG (not a pod) whose output uses valueFrom.parameter to forward from a child task.
+    - name: download-and-upload-dag
+      outputs:
+        parameters:
+          - name: version
+            valueFrom:
+              parameter: '{{tasks.do-work.outputs.parameters.version}}'
+      dag:
+        tasks:
+          - name: do-work
+            template: do-actual-work
+
+    - name: do-actual-work
+      script:
+        image: alpine/k8s:1.36.0
+        command: [sh]
+        source: |
+          echo -n 'content-for-build-v1' > /tmp/artifact.txt
+          echo -n 'build-v1' > /tmp/version
+          kubectl create configmap version-cache-nested-dag \
+            --from-literal=version=build-v1 2>/dev/null \
+            || kubectl patch configmap version-cache-nested-dag \
+               --type merge -p '{"data":{"version":"build-v1"}}'
+      outputs:
+        parameters:
+          - name: version
+            valueFrom:
+              path: /tmp/version
+        artifacts:
+          - name: artifact
+            path: /tmp/artifact.txt
+            archive:
+              none: {}
+            s3:
+              endpoint: '{{workflow.parameters.s3-endpoint}}'
+              insecure: true
+              bucket: '{{workflow.parameters.s3-bucket}}'
+              key: 'nested-dag-artifacts/build-v1.txt'
+              accessKeySecret:
+                name: '{{workflow.parameters.s3-secret-name}}'
+                key: access-key
+              secretKeySecret:
+                name: '{{workflow.parameters.s3-secret-name}}'
+                key: secret-key
+
+    - name: consume-artifact
+      inputs:
+        artifacts:
+          - name: artifact
+            path: /tmp/artifact.txt
+      script:
+        image: alpine:3
+        command: [sh]
+        source: cat /tmp/artifact.txt

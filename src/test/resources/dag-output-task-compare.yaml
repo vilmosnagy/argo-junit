@@ -1,0 +1,126 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: cache-or-build-
+spec:
+  arguments:
+    parameters:
+      - name: s3-endpoint
+        value: ''
+      - name: s3-bucket
+        value: ''
+      - name: s3-secret-name
+        value: ''
+  entrypoint: outer
+  templates:
+
+    # Outer DAG: runs cache-or-build sub-DAG, then consume using the resolved version.
+    - name: outer
+      dag:
+        tasks:
+          - name: cache-or-build
+            template: cache-or-build-dag
+          - name: consume
+            template: consume-artifact
+            dependencies: [cache-or-build]
+            arguments:
+              artifacts:
+                - name: artifact
+                  s3:
+                    endpoint: '{{workflow.parameters.s3-endpoint}}'
+                    insecure: true
+                    bucket: '{{workflow.parameters.s3-bucket}}'
+                    key: 'artifacts/{{tasks.cache-or-build.outputs.parameters.version}}.txt'
+                    accessKeySecret:
+                      name: '{{workflow.parameters.s3-secret-name}}'
+                      key: access-key
+                    secretKeySecret:
+                      name: '{{workflow.parameters.s3-secret-name}}'
+                      key: secret-key
+
+    # Sub-DAG that implements the cache-or-build pattern.
+    # The expression discriminant compares a task output to empty string — the scenario
+    # under test. On cache hit, download-and-upload is omitted and the expression must
+    # still resolve to check-cache's version.
+    - name: cache-or-build-dag
+      outputs:
+        parameters:
+          - name: version
+            valueFrom:
+              expression: >-
+                tasks['check-cache'].outputs.parameters['version'] == '' ?
+                tasks['download-and-upload'].outputs.parameters['version'] :
+                tasks['check-cache'].outputs.parameters['version']
+      dag:
+        tasks:
+          - name: check-cache
+            template: check-cache
+          - name: download-and-upload
+            template: download-and-upload
+            dependencies: [check-cache]
+            when: '"{{tasks.check-cache.outputs.parameters.version}}" == ""'
+
+    # Reads the cached version from a ConfigMap via kubectl.
+    # Outputs "" when the ConfigMap is absent (cold cache) or its version key is empty.
+    - name: check-cache
+      script:
+        image: alpine/k8s:1.36.0
+        command: [sh]
+        source: |
+          VERSION=$(kubectl get configmap version-cache-task-compare \
+            -o jsonpath='{.data.version}' 2>/dev/null || true)
+          echo -n "${VERSION}" > /tmp/version
+      outputs:
+        parameters:
+          - name: version
+            valueFrom:
+              path: /tmp/version
+
+    # Runs only on cache miss (when check-cache outputs "").
+    # Writes a fixed artifact to S3, then records the version in the ConfigMap so the
+    # next run's check-cache finds it and skips this step.
+    - name: download-and-upload
+      script:
+        image: alpine/k8s:1.36.0
+        command: [sh]
+        source: |
+          echo -n 'content-for-build-v1' > /tmp/artifact.txt
+          echo -n 'build-v1' > /tmp/version
+          kubectl create configmap version-cache-task-compare \
+            --from-literal=version=build-v1 2>/dev/null \
+            || kubectl patch configmap version-cache-task-compare \
+               --type merge -p '{"data":{"version":"build-v1"}}'
+      outputs:
+        parameters:
+          - name: version
+            valueFrom:
+              path: /tmp/version
+        artifacts:
+          - name: artifact
+            path: /tmp/artifact.txt
+            archive:
+              none: {}
+            s3:
+              endpoint: '{{workflow.parameters.s3-endpoint}}'
+              insecure: true
+              bucket: '{{workflow.parameters.s3-bucket}}'
+              key: 'artifacts/build-v1.txt'
+              accessKeySecret:
+                name: '{{workflow.parameters.s3-secret-name}}'
+                key: access-key
+              secretKeySecret:
+                name: '{{workflow.parameters.s3-secret-name}}'
+                key: secret-key
+
+    # Downloads the artifact whose S3 key was constructed in the DAG task arguments above.
+    # If the expression was not resolved, the key contains a raw placeholder, the S3
+    # download fails, and the workflow fails.
+    - name: consume-artifact
+      inputs:
+        artifacts:
+          - name: artifact
+            path: /tmp/artifact.txt
+      script:
+        image: alpine:3
+        command: [sh]
+        source: cat /tmp/artifact.txt

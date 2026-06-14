@@ -6,7 +6,7 @@
 
     <groupId>eu.vnagy.argotools</groupId>
     <artifactId>argo-junit</artifactId>
-    <version>0.0.8-SNAPSHOT</version>
+    <version>0.0.8</version>
 
     <name>Argo JUnit</name>
     <description>A JUnit 5 library that executes Argo Workflows locally against real containers, without a Kubernetes cluster. Write tests that run your actual workflows and assert on their outcomes, step outputs, and artifacts.</description>

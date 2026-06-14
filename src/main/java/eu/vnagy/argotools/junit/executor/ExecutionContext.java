@@ -403,8 +403,9 @@ final class ExecutionContext {
             result = WORKFLOW_CREATION_TIMESTAMP_PATTERN.matcher(result)
                     .replaceAll(Matcher.quoteReplacement(workflowCreationTimestamp));
         }
+        String effectiveStatus = workflowStatus != null ? workflowStatus : "Running";
+        result = WORKFLOW_STATUS_PATTERN.matcher(result).replaceAll(Matcher.quoteReplacement(effectiveStatus));
         if (workflowStatus != null) {
-            result = WORKFLOW_STATUS_PATTERN.matcher(result).replaceAll(Matcher.quoteReplacement(workflowStatus));
             result = WORKFLOW_DURATION_PATTERN.matcher(result).replaceAll(String.valueOf(workflowDurationSeconds));
             result = WORKFLOW_FAILURES_PATTERN.matcher(result).replaceAll("[]");
         }

@@ -375,6 +375,9 @@ public final class PodRun implements WorkflowNode {
                     effectiveInputs.put(decl.name(), downloaded);
                     log.debug("Pod '{}': downloaded external input artifact '{}' → '{}'",
                             name, decl.name(), downloaded);
+                } else {
+                    log.warn("Pod '{}': no driver found for input artifact '{}' — artifact will not be injected into the container",
+                            name, decl.name());
                 }
             }
         }

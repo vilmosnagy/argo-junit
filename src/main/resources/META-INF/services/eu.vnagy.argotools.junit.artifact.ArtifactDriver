@@ -1,1 +1,2 @@
 eu.vnagy.argotools.junit.artifact.S3ArtifactDriver
+eu.vnagy.argotools.junit.artifact.GitArtifactDriver

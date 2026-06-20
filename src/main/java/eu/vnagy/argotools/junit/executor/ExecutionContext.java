@@ -25,6 +25,7 @@ import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1SecretKeySelector;
 import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1Volume;
 import eu.vnagy.argotools.junit.model.RetryStrategy;
+import eu.vnagy.argotools.junit.model.GitArtifact;
 import eu.vnagy.argotools.junit.model.S3Artifact;
 import eu.vnagy.argotools.junit.model.Template;
 import org.testcontainers.containers.GenericContainer;
@@ -287,8 +288,19 @@ final class ExecutionContext {
         return artifactDrivers.stream().filter(d -> d.supports(artifact)).findFirst();
     }
 
-    /** Returns a copy of {@code art} with any parameter placeholders in S3 fields substituted. */
+    /** Returns a copy of {@code art} with any parameter placeholders in location fields substituted. */
     static Artifact substituteArtifact(Artifact art, ExecutionContext ctx, Map<String, String> inputParams) {
+        if (art.getGit() != null) {
+            GitArtifact orig = art.getGit();
+            GitArtifact git = new GitArtifact();
+            git.setRepo(orig.getRepo() != null ? ctx.substitute(orig.getRepo(), inputParams) : null);
+            git.setRevision(orig.getRevision() != null ? ctx.substitute(orig.getRevision(), inputParams) : null);
+            Artifact result = new Artifact();
+            result.setName(art.getName());
+            result.setGit(git);
+            result.setArchive(art.getArchive());
+            return result;
+        }
         if (art.getS3() == null) return art;
         S3Artifact orig = art.getS3();
         S3Artifact s3 = new S3Artifact();

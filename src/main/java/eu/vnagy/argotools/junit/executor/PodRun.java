@@ -375,8 +375,11 @@ public final class PodRun implements WorkflowNode {
                     effectiveInputs.put(decl.name(), downloaded);
                     log.debug("Pod '{}': downloaded external input artifact '{}' → '{}'",
                             name, decl.name(), downloaded);
-                } else {
+                } else if (!effectiveInputs.containsKey(decl.name())) {
                     log.warn("Pod '{}': no driver found for input artifact '{}' — artifact will not be injected into the container",
+                            name, decl.name());
+                } else {
+                    log.debug("Pod '{}': input artifact '{}' already resolved from prior step, skipping driver lookup",
                             name, decl.name());
                 }
             }
@@ -447,10 +450,11 @@ public final class PodRun implements WorkflowNode {
                 Map<String, Path> collected = new LinkedHashMap<>();
                 for (ArtifactSpec spec : specsToCollect) {
                     try {
-                        Path extracted = extractArtifact(this.container, spec, ctx.tmpDir);
+                        String resolvedPath = ctx.substitute(spec.path(), finalInputParams);
+                        Path extracted = extractArtifact(this.container, resolvedPath, spec.name(), ctx.tmpDir);
                         collected.put(spec.name(), extracted);
                         log.debug("Pod '{}': collected output artifact '{}' from '{}' → '{}'",
-                                name, spec.name(), spec.path(), extracted);
+                                name, spec.name(), resolvedPath, extracted);
                         if (spec.artifact() != null && spec.artifact().getGlobalName() != null) {
                             ctx.globalOutputArtifacts.put(spec.artifact().getGlobalName(), extracted);
                             log.debug("Pod '{}': global artifact '{}' registered",
@@ -487,7 +491,7 @@ public final class PodRun implements WorkflowNode {
             Map<String, String> params = new LinkedHashMap<>();
             for (OutputParamSpec spec : outputParamSpecs) {
                 try {
-                    String value = readFileFromContainer(this.container, spec.path());
+                    String value = readFileFromContainer(this.container, ctx.substitute(spec.path(), finalInputParams));
                     params.put(spec.name(), value);
                     log.debug("Pod '{}': output parameter '{}' = '{}'", name, spec.name(), value);
                     if (spec.globalName() != null) {
@@ -841,10 +845,11 @@ public final class PodRun implements WorkflowNode {
      * Supports both file and directory artifacts; returns the path of the single top-level
      * item extracted (a file or a directory).
      */
-    private Path extractArtifact(GenericContainer<?> cont, ArtifactSpec spec, Path parentDir) throws Exception {
+    private Path extractArtifact(GenericContainer<?> cont, String containerPath, String artifactName,
+                                  Path parentDir) throws Exception {
         Path tempDir = Files.createTempDirectory(parentDir, "argo-art-" + name + "-");
         try (InputStream tarStream = cont.getDockerClient()
-                .copyArchiveFromContainerCmd(cont.getContainerId(), spec.path()).exec();
+                .copyArchiveFromContainerCmd(cont.getContainerId(), containerPath).exec();
              TarArchiveInputStream tarInput = new TarArchiveInputStream(tarStream)) {
             TarArchiveEntry entry;
             while ((entry = tarInput.getNextTarEntry()) != null) {
@@ -864,7 +869,7 @@ public final class PodRun implements WorkflowNode {
         try (var ls = Files.list(tempDir)) {
             List<Path> topLevel = ls.toList();
             if (topLevel.isEmpty()) throw new IllegalStateException(
-                    "No content extracted for artifact '" + spec.name() + "' from '" + spec.path() + "'");
+                    "No content extracted for artifact '" + artifactName + "' from '" + containerPath + "'");
             // When the runtime strips the parent directory from the archive (e.g. for bind-mounted
             // paths), all files land flat in tempDir. Return tempDir itself so callers see a directory.
             return topLevel.size() == 1 ? topLevel.get(0) : tempDir;

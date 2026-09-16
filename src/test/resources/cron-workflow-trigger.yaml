@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: cron-trigger-test
+  namespace: default
+spec:
+  # Never actually evaluated — kwok has no Argo cron controller.
+  schedules:
+    - "0 0 * * *"
+  timezone: UTC
+  concurrencyPolicy: Replace
+  startingDeadlineSeconds: 0
+  workflowSpec:
+    entrypoint: echo
+    templates:
+    - name: echo
+      container:
+        image: alpine:3
+        command: [echo, hello-from-cron]

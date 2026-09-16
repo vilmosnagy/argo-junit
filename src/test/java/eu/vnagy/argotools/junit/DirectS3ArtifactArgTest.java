@@ -24,7 +24,7 @@ import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Workflow;
-import eu.vnagy.argotools.junit.testutil.MinioContainer;
+import eu.vnagy.argotools.junit.testutil.SiloContainer;
 import eu.vnagy.argotools.junit.util.WorkflowSummary;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -52,11 +52,11 @@ class DirectS3ArtifactArgTest {
     static final String BUCKET = "direct-s3-artifact-test";
 
     static KwokContainer kwok;
-    static MinioContainer minio;
+    static SiloContainer minio;
 
     @BeforeAll
     static void setup() {
-        minio = new MinioContainer();
+        minio = new SiloContainer();
         minio.start();
         minio.createBucket(BUCKET);
 

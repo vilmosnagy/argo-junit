@@ -34,7 +34,7 @@ import eu.vnagy.argotools.junit.model.IoK8sApiCoreV1SecretKeySelector;
 import eu.vnagy.argotools.junit.model.S3Artifact;
 import eu.vnagy.argotools.junit.model.Template;
 import eu.vnagy.argotools.junit.model.Workflow;
-import eu.vnagy.argotools.junit.testutil.MinioContainer;
+import eu.vnagy.argotools.junit.testutil.SiloContainer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -50,11 +50,11 @@ class MapReduceTest {
     static final String SECRET = "minio-creds";
 
     static KwokContainer  kwok;
-    static MinioContainer minio;
+    static SiloContainer minio;
 
     @BeforeAll
     static void setUp() throws Exception {
-        minio = new MinioContainer();
+        minio = new SiloContainer();
         minio.start();
         minio.createBucket(BUCKET);
 

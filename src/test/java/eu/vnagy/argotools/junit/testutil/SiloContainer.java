@@ -36,15 +36,16 @@ import java.net.URI;
 import java.util.Base64;
 import java.util.Map;
 
-/** Testcontainer wrapping MinIO for S3-compatible storage in unit tests. */
-public class MinioContainer extends GenericContainer<MinioContainer> {
+/** Testcontainer wrapping Silo (a MinIO-compatible fork) for S3-compatible storage in unit tests. */
+public class SiloContainer extends GenericContainer<SiloContainer> {
 
     public static final String DEFAULT_ACCESS_KEY = "minioadmin";
     public static final String DEFAULT_SECRET_KEY = "minioadmin";
     private static final int MINIO_PORT = 9000;
 
-    public MinioContainer() {
-        super("minio/minio:latest");
+    public SiloContainer() {
+        super("docker.io/pgsty/silo:latest");
+        // Silo keeps the MINIO_* env vars and /minio/* routes for drop-in compatibility.
         withCommand("server", "/data", "--console-address", ":9001");
         withExposedPorts(MINIO_PORT);
         withEnv("MINIO_ROOT_USER", DEFAULT_ACCESS_KEY);
@@ -74,7 +75,7 @@ public class MinioContainer extends GenericContainer<MinioContainer> {
         }
     }
 
-    /** Returns a fabric8 Secret with MinIO credentials, ready to apply to kwok. */
+    /** Returns a fabric8 Secret with Silo credentials, ready to apply to kwok. */
     public Secret credentialsSecret(String secretName, String accessKeyField, String secretKeyField) {
         return new SecretBuilder()
                 .withNewMetadata().withName(secretName).endMetadata()

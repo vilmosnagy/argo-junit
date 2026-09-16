@@ -30,6 +30,11 @@ import java.util.concurrent.CompletableFuture;
  * An empty iterations list means the task produced no output — either because its
  * {@code depends} expression was not satisfied ({@link #omitted()} = true) or because
  * its {@code when} condition was false ({@link #skipped()} = true).
+ *
+ * <p>An instance is published into the owning {@link DagRun}'s live task map as soon as the
+ * fan-out has been dispatched, so it may be observed while iterations are still in flight.
+ * All status predicates therefore aggregate the iteration nodes live — those nodes update
+ * themselves as their containers run.
  */
 public final class ItemRun implements WorkflowNode {
 
@@ -65,8 +70,10 @@ public final class ItemRun implements WorkflowNode {
     @Override public boolean omitted()  { return iterations.isEmpty() && !skippedByWhen; }
     @Override public boolean skipped()  { return skippedByWhen; }
     @Override public boolean daemoned() { return false; }
-    @Override public boolean running()  { return false; }
-    @Override public boolean pending()  { return false; }
+    @Override public boolean running()  { return iterations.stream().anyMatch(WorkflowNode::running); }
+    @Override public boolean pending()  {
+        return !iterations.isEmpty() && iterations.stream().allMatch(WorkflowNode::pending);
+    }
 
     @Override public void skip() { throw new UnsupportedOperationException(); }
     @Override public void omit() { throw new UnsupportedOperationException(); }

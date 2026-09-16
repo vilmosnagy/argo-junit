@@ -33,7 +33,10 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
 import java.util.function.Predicate;
 
 /**
@@ -76,6 +79,15 @@ import java.util.function.Predicate;
 public class ArgoKwok {
 
     private static final Logger log = LoggerFactory.getLogger(ArgoKwok.class);
+
+    private static final String NAME_SUFFIX_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
+    private static final Random RANDOM = new Random();
+
+    /** Resource coordinates of the Argo {@code CronWorkflow} CRD. */
+    public static final ResourceDefinitionContext CRON_WORKFLOW_CTX =
+            new ResourceDefinitionContext.Builder()
+                    .withGroup("argoproj.io").withVersion("v1alpha1").withKind("CronWorkflow")
+                    .withNamespaced(true).build();
 
     private final KwokContainer kwok;
     private KubernetesClient k8s;
@@ -172,9 +184,87 @@ public class ArgoKwok {
         }
     }
 
+    /**
+     * Triggers an already-applied {@code CronWorkflow} immediately, as the Argo cron controller
+     * would on a schedule hit.
+     *
+     * <p>kwok runs no Argo controllers, so a {@code CronWorkflow} applied via
+     * {@link #applyYaml(String)} never fires by itself. This method reads the
+     * {@code CronWorkflow} back out of the cluster, lifts its {@code spec.workflowSpec} — which
+     * is structurally identical to a {@code Workflow}'s own {@code spec} — and submits it as a
+     * one-off {@code Workflow} under a freshly generated name, so the run can be picked up with
+     * {@link ArgoWorkflowExecutor}:
+     *
+     * <pre>{@code
+     * argoKwok.applyYaml("/my-cron-workflow.yaml");
+     * String name = argoKwok.triggerCronWorkflow("default", "my-cron-workflow");
+     * }</pre>
+     *
+     * <p>Each call submits a new {@code Workflow}; the schedule itself is never evaluated.
+     *
+     * @param namespace        namespace holding the {@code CronWorkflow}
+     * @param cronWorkflowName name of the {@code CronWorkflow} to trigger
+     * @return the generated name of the submitted {@code Workflow}
+     * @throws IllegalStateException if the {@code CronWorkflow} does not exist or carries no
+     *                               {@code spec.workflowSpec}
+     */
+    public String triggerCronWorkflow(String namespace, String cronWorkflowName) {
+        String ns = namespace != null ? namespace : "default";
+        GenericKubernetesResource cronWorkflow = k8s
+                .genericKubernetesResources(CRON_WORKFLOW_CTX)
+                .inNamespace(ns).withName(cronWorkflowName).get();
+        if (cronWorkflow == null) throw new IllegalStateException(
+                "CronWorkflow '" + cronWorkflowName + "' not found in namespace '" + ns + "'");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> spec =
+                (Map<String, Object>) cronWorkflow.getAdditionalProperties().get("spec");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> workflowSpec =
+                spec == null ? null : (Map<String, Object>) spec.get("workflowSpec");
+        if (workflowSpec == null) throw new IllegalStateException(
+                "CronWorkflow '" + cronWorkflowName + "' in namespace '" + ns
+                + "' has no spec.workflowSpec");
+
+        String workflowName = cronWorkflowName + "-" + generateNameSuffix();
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("name", workflowName);
+        metadata.put("namespace", ns);
+
+        Map<String, Object> doc = new LinkedHashMap<>();
+        doc.put("apiVersion", "argoproj.io/v1alpha1");
+        doc.put("kind", "Workflow");
+        doc.put("metadata", metadata);
+        doc.put("spec", workflowSpec);
+
+        GenericKubernetesResource workflow = k8s.getKubernetesSerialization()
+                .unmarshal(new Yaml().dump(doc), GenericKubernetesResource.class);
+        k8s.genericKubernetesResources(WORKFLOW_CTX)
+                .inNamespace(ns)
+                .resource(workflow)
+                .create();
+
+        log.debug("Triggered CronWorkflow {}/{} as Workflow '{}'", ns, cronWorkflowName, workflowName);
+        return workflowName;
+    }
+
     // -------------------------------------------------------------------------
     // Internals
     // -------------------------------------------------------------------------
+
+    private static final ResourceDefinitionContext WORKFLOW_CTX =
+            new ResourceDefinitionContext.Builder()
+                    .withGroup("argoproj.io").withVersion("v1alpha1").withKind("Workflow")
+                    .withNamespaced(true).build();
+
+    private static String generateNameSuffix() {
+        char[] chars = new char[5];
+        for (int i = 0; i < chars.length; i++) {
+            chars[i] = NAME_SUFFIX_CHARS.charAt(RANDOM.nextInt(NAME_SUFFIX_CHARS.length()));
+        }
+        return new String(chars);
+    }
 
     private void applyItem(HasMetadata item) {
         String kind = item.getKind();

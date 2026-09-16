@@ -24,7 +24,7 @@ import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Workflow;
-import eu.vnagy.argotools.junit.testutil.MinioContainer;
+import eu.vnagy.argotools.junit.testutil.SiloContainer;
 import eu.vnagy.argotools.junit.util.WorkflowSummary;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -74,11 +74,11 @@ class DagOutputTaskCompareExpressionTest {
     static final String FIXED_VERSION = "build-v1";
 
     static KwokContainer  kwok;
-    static MinioContainer minio;
+    static SiloContainer minio;
 
     @BeforeAll
     static void setup() {
-        minio = new MinioContainer();
+        minio = new SiloContainer();
         minio.start();
         minio.createBucket(BUCKET);
 

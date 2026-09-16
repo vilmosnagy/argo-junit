@@ -24,7 +24,7 @@ import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Workflow;
-import eu.vnagy.argotools.junit.testutil.MinioContainer;
+import eu.vnagy.argotools.junit.testutil.SiloContainer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -53,11 +53,11 @@ class InputArtifactS3CredSubstitutionTest {
     static final String SECRET_NAME = "minio-credentials";
 
     static KwokContainer kwok;
-    static MinioContainer minio;
+    static SiloContainer minio;
 
     @BeforeAll
     static void setup() {
-        minio = new MinioContainer();
+        minio = new SiloContainer();
         minio.start();
         minio.createBucket(BUCKET);
         try (S3Client client = minio.createClient()) {

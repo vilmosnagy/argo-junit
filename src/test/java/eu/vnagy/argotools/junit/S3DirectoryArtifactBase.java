@@ -27,7 +27,7 @@ import eu.vnagy.argotools.junit.executor.StepsRun;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Workflow;
-import eu.vnagy.argotools.junit.testutil.MinioContainer;
+import eu.vnagy.argotools.junit.testutil.SiloContainer;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream;
@@ -59,11 +59,11 @@ public abstract class S3DirectoryArtifactBase {
     static final String SECRET_NAME = "minio-dir-creds";
 
     static KwokContainer  kwok;
-    static MinioContainer minio;
+    static SiloContainer minio;
 
     @BeforeAll
     static void setUpS3() throws Exception {
-        minio = new MinioContainer();
+        minio = new SiloContainer();
         minio.start();
         minio.createBucket(BUCKET);
 

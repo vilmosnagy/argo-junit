@@ -28,7 +28,7 @@ import eu.vnagy.argotools.junit.executor.PodRun;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Workflow;
-import eu.vnagy.argotools.junit.testutil.MinioContainer;
+import eu.vnagy.argotools.junit.testutil.SiloContainer;
 import eu.vnagy.argotools.junit.testutil.RetryOutcomeGate;
 import eu.vnagy.argotools.junit.testutil.WorkflowReleaseGate;
 import eu.vnagy.argotools.junit.util.WorkflowSummary;
@@ -313,11 +313,11 @@ class WorkflowSummaryTest {
         LoggerExtension loggerExtension = new LoggerExtension();
 
         KwokContainer kwok;
-        MinioContainer minio;
+        SiloContainer minio;
 
         @BeforeAll
         void setup() throws IOException {
-            minio = new MinioContainer();
+            minio = new SiloContainer();
             minio.start();
             minio.createBucket(BUCKET);
 

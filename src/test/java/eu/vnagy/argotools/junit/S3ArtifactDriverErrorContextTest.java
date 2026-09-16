@@ -24,7 +24,7 @@ import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import eu.vnagy.argotools.junit.executor.WorkflowRun;
 import eu.vnagy.argotools.junit.kwok.KwokContainer;
 import eu.vnagy.argotools.junit.model.Workflow;
-import eu.vnagy.argotools.junit.testutil.MinioContainer;
+import eu.vnagy.argotools.junit.testutil.SiloContainer;
 import eu.vnagy.argotools.junit.util.WorkflowSummary;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -53,11 +53,11 @@ class S3ArtifactDriverErrorContextTest {
     static final String SECRET_NAME = "minio-creds-err";
 
     static KwokContainer  kwok;
-    static MinioContainer minio;
+    static SiloContainer minio;
 
     @BeforeAll
     static void setup() {
-        minio = new MinioContainer();
+        minio = new SiloContainer();
         minio.start();
         minio.createBucket(BUCKET);
         // Intentionally do NOT upload anything — the download must fail with NoSuchKeyException.

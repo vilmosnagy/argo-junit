@@ -20,6 +20,7 @@ package eu.vnagy.argotools.junit.executor;
  * #L%
  */
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.vnagy.argotools.junit.model.Artifact;
 import eu.vnagy.argotools.junit.model.Template;
 import eu.vnagy.argotools.junit.model.WorkflowStep;
@@ -33,9 +34,14 @@ public final class StepsRun extends BaseCompositeRun implements WorkflowNode {
 
     private static final Logger log = LoggerFactory.getLogger(StepsRun.class);
 
+    private static final ObjectMapper JSON = new ObjectMapper();
+
     private record StepSpec(String name, String when, Map<String, String> args,
                             Map<String, Artifact> artifactArgs,
-                            Template stepTemplate, String childOwner) {}
+                            Template stepTemplate, String childOwner,
+                            String withParam, List<Object> withItems) {
+        boolean isLoop() { return withParam != null || !withItems.isEmpty(); }
+    }
 
     private final String owningWt;
     private final List<List<StepSpec>> groups;
@@ -69,7 +75,9 @@ public final class StepsRun extends BaseCompositeRun implements WorkflowNode {
                 specGroup.add(new StepSpec(step.getName(), step.getWhen(),
                         resolveArgs(step.getArguments()),
                         resolveArtifactArgs(step.getArguments()),
-                        stepTemplate, childOwner));
+                        stepTemplate, childOwner,
+                        step.getWithParam(),
+                        step.getWithItems() != null ? step.getWithItems() : List.of()));
                 WorkflowNode child = nowConstructing.contains(stepTemplate.getName())
                         ? new UninitializedNode(step.getName(), stepTemplate, childOwner)
                         : WorkflowNode.from(step.getName(), stepTemplate, templateMap, nowConstructing, childOwner);
@@ -127,6 +135,7 @@ public final class StepsRun extends BaseCompositeRun implements WorkflowNode {
         ExecutionContext localCtx = ctx.childScope();
         log.debug("Steps '{}': {} group(s)", name, groups.size());
 
+        Map<String, CompletableFuture<WorkflowNode>> loopResults = new LinkedHashMap<>();
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
 
         for (int i = 0; i < groups.size(); i++) {
@@ -138,6 +147,13 @@ public final class StepsRun extends BaseCompositeRun implements WorkflowNode {
                 List<CompletableFuture<?>> groupFutures = new ArrayList<>();
 
                 for (StepSpec spec : group) {
+                    if (spec.isLoop()) {
+                        CompletableFuture<WorkflowNode> loopFuture = executeLoopStep(spec, localCtx, inputParams);
+                        loopResults.put(spec.name(), loopFuture);
+                        groupFutures.add(loopFuture);
+                        continue;
+                    }
+
                     WorkflowNode node = currentSteps.get(spec.name());
 
                     if (spec.when() != null) {
@@ -186,11 +202,121 @@ public final class StepsRun extends BaseCompositeRun implements WorkflowNode {
                 }))
                 .thenApply(_ -> {
                     log.debug("Steps '{}': all groups completed", name);
+
+                    // Replace pre-built placeholder nodes with ItemRun results
+                    if (!loopResults.isEmpty()) {
+                        Map<String, WorkflowNode> updated = new LinkedHashMap<>(currentSteps);
+                        loopResults.forEach((stepName, future) -> updated.put(stepName, future.join()));
+                        this.steps = Collections.unmodifiableMap(updated);
+                    }
+
                     resolveOutputArtifacts(localCtx, inputParams,
                             localCtx.stepArtifacts, localCtx.stepOutputResults);
                     resolveOutputParameters(localCtx, inputParams);
                     return (WorkflowNode) this;
                 });
+    }
+
+    private CompletableFuture<WorkflowNode> executeLoopStep(StepSpec spec, ExecutionContext localCtx,
+            Map<String, String> inputParams) {
+        if (spec.when() != null && !spec.when().isBlank()) {
+            String evaluated = localCtx.substitute(spec.when(), inputParams);
+            boolean run = localCtx.evaluateWhen(evaluated);
+            log.debug("Step '{}': when='{}' → '{}' → {}", spec.name(), spec.when(), evaluated,
+                    run ? "run" : "skip");
+            if (!run) {
+                return CompletableFuture.completedFuture(new ItemRun(spec.name(), List.of(), List.of(), true));
+            }
+        }
+
+        List<Map<String, String>> items = resolveLoopItems(spec, localCtx, inputParams);
+        if (items.isEmpty()) {
+            log.debug("Steps '{}': loop step '{}' has zero items", name, spec.name());
+            return CompletableFuture.completedFuture(new ItemRun(spec.name(), List.of(), List.of()));
+        }
+
+        List<CompletableFuture<WorkflowNode>> iterFutures = new ArrayList<>();
+        List<String> itemLabels = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            Map<String, String> itemFields = items.get(i);
+            boolean isScalar = itemFields.containsKey("");
+            String itemValue  = isScalar ? itemFields.get("") : null;
+            Map<String, String> objectFields = isScalar ? Map.of() : itemFields;
+
+            itemLabels.add(buildItemLabel(isScalar, itemValue, objectFields));
+
+            ExecutionContext itemCtx = localCtx.withLoopItem(itemValue, objectFields);
+
+            Map<String, String> resolvedArgs = new LinkedHashMap<>();
+            spec.args().forEach((k, v) -> resolvedArgs.put(k, itemCtx.substitute(v, inputParams)));
+            injectDefaultParams(spec.stepTemplate(), itemCtx, inputParams, resolvedArgs);
+
+            String iterName = spec.name() + "[" + i + "]";
+            WorkflowNode iterNode = WorkflowNode.from(iterName, spec.stepTemplate(),
+                    localCtx.templateMap, Set.of(originalTemplate.getName()), spec.childOwner());
+
+            var artResult = resolveAndDownload(spec.artifactArgs(), itemCtx, inputParams,
+                    resolvedArgs, name, iterName);
+            if (artResult.error() != null) {
+                if (iterNode instanceof PodRun pod) pod.errorWith(artResult.error());
+                iterFutures.add(CompletableFuture.completedFuture(iterNode));
+            } else {
+                ExecutionContext podCtx = (artResult.resolved().isEmpty()
+                        ? itemCtx : itemCtx.withInputArtifacts(artResult.resolved()))
+                        .withRequestedOutputArtifacts(
+                                neededArtifacts.getOrDefault(spec.name(), Set.of()));
+                iterFutures.add(iterNode.executeAsync(podCtx, resolvedArgs));
+            }
+        }
+
+        List<String> labels = List.copyOf(itemLabels);
+        return CompletableFuture.allOf(iterFutures.toArray(new CompletableFuture[0]))
+                .thenApply(_ -> {
+                    List<WorkflowNode> results = iterFutures.stream()
+                            .map(CompletableFuture::join)
+                            .toList();
+                    return (WorkflowNode) new ItemRun(spec.name(), results, labels);
+                });
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, String>> resolveLoopItems(StepSpec spec, ExecutionContext ctx,
+            Map<String, String> inputParams) {
+        List<Object> rawItems;
+        if (spec.withParam() != null) {
+            String resolved = ctx.substitute(spec.withParam(), inputParams);
+            try {
+                rawItems = JSON.readerForListOf(Object.class).readValue(resolved);
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                        "Steps '" + name + "': step '" + spec.name()
+                        + "' withParam is not a valid JSON array: " + resolved, e);
+            }
+        } else {
+            rawItems = spec.withItems();
+        }
+
+        List<Map<String, String>> result = new ArrayList<>();
+        for (Object item : rawItems) {
+            if (item instanceof Map<?, ?> map) {
+                Map<String, String> fields = new LinkedHashMap<>();
+                map.forEach((k, v) -> fields.put(String.valueOf(k), String.valueOf(v)));
+                result.add(fields);
+            } else {
+                result.add(Map.of("", String.valueOf(item)));
+            }
+        }
+        return result;
+    }
+
+    private static String buildItemLabel(boolean isScalar, String itemValue,
+                                         Map<String, String> objectFields) {
+        if (isScalar) return itemValue;
+        try {
+            return JSON.writeValueAsString(objectFields);
+        } catch (Exception e) {
+            return objectFields.toString();
+        }
     }
 
     // -------------------------------------------------------------------------

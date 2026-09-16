@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: workflow-run-timing-
+spec:
+  entrypoint: wait-for-release
+  arguments:
+    parameters:
+    - name: release_port
+      value: "0"
+  templates:
+  - name: wait-for-release
+    script:
+      image: python:alpine3.23
+      command: [python3]
+      source: |
+        import urllib.request, time
+        while True:
+            try:
+                urllib.request.urlopen(
+                    'http://host.testcontainers.internal:{{workflow.parameters.release_port}}/ready',
+                    timeout=1)
+                break
+            except Exception:
+                pass
+            time.sleep(0.1)

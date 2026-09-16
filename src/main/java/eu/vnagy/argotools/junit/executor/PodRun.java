@@ -708,6 +708,9 @@ public final class PodRun implements WorkflowNode {
             if (scriptSource != null) {
                 log.debug("Pod '{}': stdout='{}'", name, stdout);
             }
+            if (code != 0) {
+                log.debug("Pod '{}': attempt {} FAILED — full logs (stdout+stderr):\n{}", name, attempts, podLogs);
+            }
 
             this.exitCode = code;
             this.logs = podLogs;

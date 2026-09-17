@@ -1,0 +1,55 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: withparam-loop-live-
+spec:
+  arguments:
+    parameters:
+      - name: release_port
+        value: "0"
+  entrypoint: main
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: process-each
+            template: gated-item
+            arguments:
+              parameters:
+                - name: label
+                  value: "{{item.label}}"
+                - name: gated
+                  value: "{{item.gated}}"
+            withParam: '[{"label":"first","gated":"no"},{"label":"second","gated":"no"},{"label":"third","gated":"yes"}]'
+
+    # Two iterations report "done" to the test's HTTP server and exit immediately;
+    # the third one blocks polling /ready until the test releases it. That gives a
+    # stable in-flight window where some iterations have finished and one is running.
+    - name: gated-item
+      inputs:
+        parameters:
+          - name: label
+          - name: gated
+      script:
+        image: python:alpine3.23
+        command: [python3]
+        source: |
+          import urllib.request, time
+          base = 'http://host.testcontainers.internal:{{workflow.parameters.release_port}}'
+          if '{{inputs.parameters.gated}}' == 'yes':
+              while True:
+                  try:
+                      urllib.request.urlopen(base + '/ready', timeout=1).read()
+                      break
+                  except Exception:
+                      pass
+                  time.sleep(0.1)
+          else:
+              while True:
+                  try:
+                      urllib.request.urlopen(base + '/done?label={{inputs.parameters.label}}', timeout=1).read()
+                      break
+                  except Exception:
+                      pass
+                  time.sleep(0.1)
+          print('{{inputs.parameters.label}}')

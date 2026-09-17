@@ -47,7 +47,10 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
 
     private final String owningWt;
     private final List<DagTaskSpec> specs;
+    /** Live view of the current attempt's task nodes; replaced wholesale, never mutated in place. */
     private volatile Map<String, WorkflowNode> tasks;
+    /** Guards the read-copy-write of {@link #tasks} — several loop tasks can publish concurrently. */
+    private final Object tasksLock = new Object();
     private final Map<String, Set<String>> neededArtifacts;
     // loop task names whose aggregated outputs.parameters are referenced by a downstream withParam
     private final Set<String> tasksNeedingParamAggregation;
@@ -141,7 +144,12 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
 
     @Override protected String typeName() { return "Dag"; }
 
-    @Override protected void resetNodes(ExecutionContext ctx) { this.tasks = buildTaskNodes(ctx); }
+    @Override protected void resetNodes(ExecutionContext ctx) {
+        Map<String, WorkflowNode> fresh = buildTaskNodes(ctx);
+        // A retry only starts once the previous attempt's future completed, so no loop task can
+        // still be publishing here; take the lock anyway so every write to `tasks` goes one way.
+        synchronized (tasksLock) { this.tasks = fresh; }
+    }
 
     @Override protected Map<String, WorkflowNode> currentNodes() { return tasks; }
 
@@ -214,6 +222,7 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                     }
 
                     List<CompletableFuture<WorkflowNode>> iterFutures = new ArrayList<>();
+                    List<WorkflowNode> iterNodes = new ArrayList<>();
                     List<String> itemLabels = new ArrayList<>();
                     for (int i = 0; i < items.size(); i++) {
                         Map<String, String> itemFields = items.get(i);
@@ -233,6 +242,7 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                         WorkflowNode iterNode = WorkflowNode.from(iterName, spec.taskTemplate(),
                                 localCtx.templateMap, Set.of(originalTemplate.getName()),
                                 spec.childOwner());
+                        iterNodes.add(iterNode);
 
                         var artResult = resolveAndDownload(spec.artifactArgs(), itemCtx, inputParams,
                                 resolvedArgs, name, iterName);
@@ -249,6 +259,16 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                     }
 
                     List<String> labels = List.copyOf(itemLabels);
+
+                    // Publish the fan-out into the live task map now that every iteration node
+                    // exists and has been dispatched — waiting for allOf() would leave callers
+                    // polling get()/tasks() staring at the plan-time single-instance placeholder
+                    // until the whole DAG finished. The iteration nodes are the same instances the
+                    // final ItemRun will hold and they update their own status as they run, so this
+                    // partial ItemRun reports true per-item progress with no further plumbing.
+                    publishTasks(Map.of(spec.name(),
+                            new ItemRun(spec.name(), List.copyOf(iterNodes), labels)));
+
                     return CompletableFuture.allOf(iterFutures.toArray(new CompletableFuture[0]))
                             .thenApply(_ -> {
                                 List<WorkflowNode> results = iterFutures.stream()
@@ -317,21 +337,38 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                 .thenApply(_ -> {
                     log.debug("Dag '{}': all tasks completed", name);
 
-                    // Replace pre-built placeholder nodes with LoopRun results
-                    boolean hasLoops = specs.stream().anyMatch(DagTaskSpec::isLoop);
-                    if (hasLoops) {
-                        Map<String, WorkflowNode> updated = new LinkedHashMap<>(currentTasks);
-                        for (DagTaskSpec spec : specs) {
-                            if (spec.isLoop()) updated.put(spec.name(), futures.get(spec.name()).join());
-                        }
-                        this.tasks = Collections.unmodifiableMap(updated);
+                    // Replace pre-built placeholder nodes with the final ItemRun results. For a
+                    // dispatched fan-out this re-publishes an equivalent ItemRun over the same
+                    // iteration nodes; it still matters for loops that never dispatched (omitted,
+                    // skipped by when, or zero items), which publish no partial ItemRun.
+                    Map<String, WorkflowNode> loopResults = new LinkedHashMap<>();
+                    for (DagTaskSpec spec : specs) {
+                        if (spec.isLoop()) loopResults.put(spec.name(), futures.get(spec.name()).join());
                     }
+                    if (!loopResults.isEmpty()) publishTasks(loopResults);
 
                     resolveOutputArtifacts(localCtx, inputParams,
                             localCtx.taskArtifacts, localCtx.taskOutputResults);
                     resolveOutputParameters(localCtx, inputParams);
                     return (WorkflowNode) this;
                 });
+    }
+
+    /**
+     * Copy-on-write update of the live task map read by {@link #get(String)} and {@link #tasks()}.
+     *
+     * <p>Loop tasks publish their {@link ItemRun} from executor-pool threads and a DAG may contain
+     * several of them running at once, so the read-copy-write is serialized on {@link #tasksLock};
+     * the new map is then handed to readers through the {@code volatile} field in one write.
+     * Entries not named in {@code replacements} keep their identity and position, so a late
+     * publisher never resurrects another task's stale placeholder.
+     */
+    private void publishTasks(Map<String, WorkflowNode> replacements) {
+        synchronized (tasksLock) {
+            Map<String, WorkflowNode> updated = new LinkedHashMap<>(this.tasks);
+            updated.putAll(replacements);
+            this.tasks = Collections.unmodifiableMap(updated);
+        }
     }
 
     @SuppressWarnings("unchecked")

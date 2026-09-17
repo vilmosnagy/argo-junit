@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Comparator;
 import java.util.Map;
 import java.util.Optional;
@@ -45,15 +46,23 @@ public final class WorkflowRun implements AutoCloseable {
     private final CompletableFuture<Void> future;
     final Path tmpDir;
     private final ConcurrentHashMap<String, String> globalOutputParams;
+    private final Instant startedAt;
+    private volatile Instant completedAt; // null until the workflow finishes
 
     WorkflowRun(WorkflowNode entrypoint, WorkflowNode exitHandlerNode,
                 CompletableFuture<Void> future, Path tmpDir,
-                ConcurrentHashMap<String, String> globalOutputParams) {
+                ConcurrentHashMap<String, String> globalOutputParams,
+                Instant startedAt) {
         this.entrypoint = entrypoint;
         this.exitHandlerNode = exitHandlerNode;
         this.future = future;
         this.tmpDir = tmpDir;
         this.globalOutputParams = globalOutputParams;
+        this.startedAt = startedAt;
+        // Stamp the completion instant so duration() can freeze once the workflow is done.
+        // whenComplete on an already-completed future runs inline, so completedAt is never
+        // left unset for a future that finished before this constructor ran.
+        future.whenComplete((_, _) -> this.completedAt = Instant.now());
     }
 
     public boolean isDone() { return future.isDone(); }
@@ -110,6 +119,24 @@ public final class WorkflowRun implements AutoCloseable {
     public boolean running()   { return entrypoint.running(); }
     public boolean pending()   { return entrypoint.pending(); }
     public WorkflowNode entrypoint() { return entrypoint; }
+
+    /**
+     * The instant this workflow run started — stamped when {@code executeAsync()} dispatched
+     * the first step. Never {@code null}.
+     */
+    public Instant startedAt() { return startedAt; }
+
+    /**
+     * Wall-clock time this workflow run took: from {@link #startedAt()} to completion, or from
+     * {@link #startedAt()} to now while the run is still in progress.
+     *
+     * <p>Once the workflow finishes the value is fixed, so repeated calls return the same
+     * duration. For a workflow with an {@code onExit} handler this includes the handler.
+     */
+    public Duration duration() {
+        Instant end = completedAt;
+        return Duration.between(startedAt, end != null ? end : Instant.now());
+    }
 
     /** Returns {@code true} if this workflow had an {@code onExit} template. */
     public boolean hasExitHandler() {

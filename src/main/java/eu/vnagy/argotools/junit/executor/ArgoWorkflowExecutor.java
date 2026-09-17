@@ -434,7 +434,8 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                     .whenComplete((_, _) -> threadPool.shutdown());
         }
 
-        return new WorkflowRun(root, exitHandlerNode, future, ctx.tmpDir, rootCtx.globalOutputParams);
+        return new WorkflowRun(root, exitHandlerNode, future, ctx.tmpDir, rootCtx.globalOutputParams,
+                workflowStart);
     }
 
     /**

@@ -41,7 +41,7 @@ public class SiloContainer extends GenericContainer<SiloContainer> {
 
     public static final String DEFAULT_ACCESS_KEY = "minioadmin";
     public static final String DEFAULT_SECRET_KEY = "minioadmin";
-    private static final int MINIO_PORT = 9000;
+    public static final int MINIO_PORT = 9000;
 
     public SiloContainer() {
         super("docker.io/pgsty/silo:latest");

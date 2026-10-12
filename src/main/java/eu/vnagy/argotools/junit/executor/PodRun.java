@@ -363,25 +363,27 @@ public final class PodRun implements WorkflowNode {
                     : ctx.resolveConfigMapKey(ctx.namespace, resolvedName, resolvedKey));
         }
 
-        // Download external input artifacts (S3, etc.) onto the host before the retry loop
+        // Download external input artifacts (S3, etc.) onto the host before the retry loop. A
+        // declared location is only a default: an artifact passed by the caller wins.
         Map<String, Path> effectiveInputs = new LinkedHashMap<>(ctx.inputArtifacts);
         for (ArtifactSpec decl : inputArtifactDecls) {
-            if (decl.artifact() != null) {
-                Artifact substituted = ExecutionContext.substituteArtifact(decl.artifact(), ctx, inputParams);
-                Optional<ArtifactDriver> maybeDriver = ctx.findDriver(substituted);
-                if (maybeDriver.isPresent()) {
-                    Path downloaded = maybeDriver.get().download(
-                            substituted, ctx.tmpDir, ctx.k8sClient, ctx.namespace);
-                    effectiveInputs.put(decl.name(), downloaded);
-                    log.debug("Pod '{}': downloaded external input artifact '{}' → '{}'",
-                            name, decl.name(), downloaded);
-                } else if (!effectiveInputs.containsKey(decl.name())) {
-                    log.warn("Pod '{}': no driver found for input artifact '{}' — artifact will not be injected into the container",
-                            name, decl.name());
-                } else {
-                    log.debug("Pod '{}': input artifact '{}' already resolved from prior step, skipping driver lookup",
-                            name, decl.name());
-                }
+            if (decl.artifact() == null) continue;
+            if (effectiveInputs.containsKey(decl.name())) {
+                log.debug("Pod '{}': input artifact '{}' passed by the caller, skipping driver lookup",
+                        name, decl.name());
+                continue;
+            }
+            Artifact substituted = ExecutionContext.substituteArtifact(decl.artifact(), ctx, inputParams);
+            Optional<ArtifactDriver> maybeDriver = ctx.findDriver(substituted);
+            if (maybeDriver.isPresent()) {
+                Path downloaded = maybeDriver.get().download(
+                        substituted, ctx.tmpDir, ctx.k8sClient, ctx.namespace);
+                effectiveInputs.put(decl.name(), downloaded);
+                log.debug("Pod '{}': downloaded external input artifact '{}' → '{}'",
+                        name, decl.name(), downloaded);
+            } else {
+                log.warn("Pod '{}': no driver found for input artifact '{}' — artifact will not be injected into the container",
+                        name, decl.name());
             }
         }
 

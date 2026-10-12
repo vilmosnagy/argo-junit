@@ -132,7 +132,7 @@ public final class StepsRun extends BaseCompositeRun implements WorkflowNode {
 
     private CompletableFuture<WorkflowNode> runGroups(ExecutionContext ctx, Map<String, String> inputParams,
             Map<String, WorkflowNode> currentSteps) {
-        ExecutionContext localCtx = ctx.childScope();
+        ExecutionContext localCtx = withInputArtifactDefaults(ctx.childScope(), inputParams);
         log.debug("Steps '{}': {} group(s)", name, groups.size());
 
         Map<String, CompletableFuture<WorkflowNode>> loopResults = new LinkedHashMap<>();
@@ -180,8 +180,7 @@ public final class StepsRun extends BaseCompositeRun implements WorkflowNode {
                         continue;
                     }
 
-                    ExecutionContext podCtx = artResult.resolved().isEmpty()
-                            ? localCtx : localCtx.withInputArtifacts(artResult.resolved());
+                    ExecutionContext podCtx = localCtx.withInputArtifacts(artResult.resolved());
                     podCtx = podCtx.withRequestedOutputArtifacts(
                             neededArtifacts.getOrDefault(spec.name(), Set.of()));
 
@@ -261,8 +260,7 @@ public final class StepsRun extends BaseCompositeRun implements WorkflowNode {
                 if (iterNode instanceof PodRun pod) pod.errorWith(artResult.error());
                 iterFutures.add(CompletableFuture.completedFuture(iterNode));
             } else {
-                ExecutionContext podCtx = (artResult.resolved().isEmpty()
-                        ? itemCtx : itemCtx.withInputArtifacts(artResult.resolved()))
+                ExecutionContext podCtx = itemCtx.withInputArtifacts(artResult.resolved())
                         .withRequestedOutputArtifacts(
                                 neededArtifacts.getOrDefault(spec.name(), Set.of()));
                 iterFutures.add(iterNode.executeAsync(podCtx, resolvedArgs));

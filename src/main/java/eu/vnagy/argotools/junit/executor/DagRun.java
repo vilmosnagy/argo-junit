@@ -181,7 +181,7 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
 
     private CompletableFuture<WorkflowNode> runTasks(ExecutionContext ctx, Map<String, String> inputParams,
             Map<String, WorkflowNode> currentTasks) {
-        ExecutionContext localCtx = ctx.childScope();
+        ExecutionContext localCtx = withInputArtifactDefaults(ctx.childScope(), inputParams);
         log.debug("Dag '{}': {} task(s) in topological order: {}", name, specs.size(),
                 specs.stream().map(DagTaskSpec::name).collect(Collectors.joining(", ")));
 
@@ -250,8 +250,7 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                             if (iterNode instanceof PodRun pod) pod.errorWith(artResult.error());
                             iterFutures.add(CompletableFuture.completedFuture(iterNode));
                         } else {
-                            ExecutionContext podCtx = (artResult.resolved().isEmpty()
-                                    ? itemCtx : itemCtx.withInputArtifacts(artResult.resolved()))
+                            ExecutionContext podCtx = itemCtx.withInputArtifacts(artResult.resolved())
                                     .withRequestedOutputArtifacts(
                                             neededArtifacts.getOrDefault(spec.name(), Set.of()));
                             iterFutures.add(iterNode.executeAsync(podCtx, resolvedArgs));
@@ -316,8 +315,7 @@ public final class DagRun extends BaseCompositeRun implements WorkflowNode {
                     return CompletableFuture.completedFuture(node);
                 }
 
-                ExecutionContext podCtx = artResult.resolved().isEmpty()
-                        ? localCtx : localCtx.withInputArtifacts(artResult.resolved());
+                ExecutionContext podCtx = localCtx.withInputArtifacts(artResult.resolved());
                 podCtx = podCtx.withRequestedOutputArtifacts(
                         neededArtifacts.getOrDefault(spec.name(), Set.of()));
 

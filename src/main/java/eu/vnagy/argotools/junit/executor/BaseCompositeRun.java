@@ -190,6 +190,36 @@ abstract class BaseCompositeRun {
     }
 
     /**
+     * Returns {@code ctx} with this template's declared input artifact defaults added.
+     *
+     * <p>An input artifact that declares a location ({@code s3}, {@code git}, ...) is only a
+     * fallback in Argo: it is downloaded when the caller passed no argument for it, so that
+     * {@code {{inputs.artifacts.<name>}}} resolves inside the template. An argument passed by
+     * the caller always wins.
+     */
+    protected ExecutionContext withInputArtifactDefaults(ExecutionContext ctx, Map<String, String> inputParams) {
+        if (originalTemplate.getInputs() == null || originalTemplate.getInputs().getArtifacts() == null) return ctx;
+        Map<String, Path> effective = new LinkedHashMap<>(ctx.inputArtifacts);
+        for (Artifact decl : originalTemplate.getInputs().getArtifacts()) {
+            if (effective.containsKey(decl.getName())) continue;
+            Artifact substituted = ExecutionContext.substituteArtifact(decl, ctx, inputParams);
+            var driverOpt = ctx.findDriver(substituted);
+            if (driverOpt.isEmpty()) continue;
+            try {
+                Path downloaded = driverOpt.get().download(substituted, ctx.tmpDir, ctx.k8sClient, ctx.namespace);
+                effective.put(decl.getName(), downloaded);
+                log.debug("{} '{}': downloaded default of input artifact '{}' → '{}'",
+                        typeName(), name, decl.getName(), downloaded);
+            } catch (Exception e) {
+                String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
+                log.warn("{} '{}': failed to download default of input artifact '{}': {}",
+                        typeName(), name, decl.getName(), detail, e);
+            }
+        }
+        return effective.size() == ctx.inputArtifacts.size() ? ctx : ctx.withInputArtifacts(effective);
+    }
+
+    /**
      * Resolves and downloads all artifact arguments for a single child node.
      *
      * <p>For {@code from:} artifacts, resolves the reference via {@code ctx.resolveArtifactFrom}.
@@ -210,7 +240,13 @@ abstract class BaseCompositeRun {
             Artifact art = entry.getValue();
             if (art.getFrom() != null) {
                 String resolvedFrom = ctx.substitute(art.getFrom(), resolvedArgs);
-                ctx.resolveArtifactFrom(resolvedFrom).ifPresent(p -> resolved.put(artName, p));
+                var path = ctx.resolveArtifactFrom(resolvedFrom);
+                if (path.isPresent()) {
+                    resolved.put(artName, path.get());
+                } else if (!Boolean.TRUE.equals(art.getOptional())) {
+                    log.warn("'{}': artifact '{}' for child '{}' did not resolve (from='{}') — it will not be passed",
+                            ownerName, artName, childName, resolvedFrom);
+                }
             } else {
                 Map<String, String> substParams = new LinkedHashMap<>(inputParams);
                 substParams.putAll(resolvedArgs);

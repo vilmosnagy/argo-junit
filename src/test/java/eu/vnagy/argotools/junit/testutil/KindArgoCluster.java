@@ -23,6 +23,7 @@ package eu.vnagy.argotools.junit.testutil;
 import com.dajudge.kindcontainer.KindContainer;
 import com.dajudge.kindcontainer.KindContainerVersion;
 import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
+import io.fabric8.kubernetes.api.model.ConfigMap;
 import io.fabric8.kubernetes.api.model.ConfigMapBuilder;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.api.model.HasMetadata;
@@ -168,9 +169,18 @@ public class KindArgoCluster {
         }
         for (HasMetadata item : items) {
             String kind = item.getKind();
+            String itemName = item.getMetadata().getName();
             if (("Deployment".equals(kind) || "Service".equals(kind))
-                    && SKIPPED_DEPLOYMENTS_AND_SERVICES.contains(item.getMetadata().getName())) {
+                    && SKIPPED_DEPLOYMENTS_AND_SERVICES.contains(itemName)) {
                 continue;
+            }
+            // The quick-start's artifact repositories point at its bundled MinIO, which is not
+            // installed, and archive logs — so every pod would error. Start with no repository;
+            // useS3ArtifactRepository sets one up when a test needs it.
+            if ("ConfigMap".equals(kind) && "artifact-repositories".equals(itemName)) continue;
+            if (item instanceof ConfigMap cm && "workflow-controller-configmap".equals(itemName)
+                    && cm.getData() != null) {
+                cm.getData().remove("artifactRepository");
             }
             k8s.resource(item).inNamespace(NAMESPACE).forceConflicts().serverSideApply();
         }

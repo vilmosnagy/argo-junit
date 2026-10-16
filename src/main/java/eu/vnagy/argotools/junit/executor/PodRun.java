@@ -55,6 +55,7 @@ import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -228,7 +229,8 @@ public final class PodRun implements WorkflowNode {
         }
         this.configMapRefs = List.copyOf(cmRefs);
 
-        // env[] — plain value: entries passed directly; valueFrom: entries resolved at runtime
+        // env[] — plain value: entries passed directly; valueFrom: entries resolved at runtime.
+        // Names are kept raw: like values, they may hold template tags only resolvable at runtime.
         var envVars = template.getScript() != null
                 ? template.getScript().getEnv()
                 : (template.getContainer() != null ? template.getContainer().getEnv() : null);
@@ -250,7 +252,8 @@ public final class PodRun implements WorkflowNode {
                 }
             }
         }
-        this.plainEnv = Map.copyOf(plainEnvMap);
+        // Keep declaration order: two templated names may resolve to the same name, the later wins.
+        this.plainEnv = Collections.unmodifiableMap(plainEnvMap);
         this.envRefs = List.copyOf(envRefList);
 
         // template-level volumes — scoped to this template, merged with spec.volumes at run time
@@ -350,15 +353,15 @@ public final class PodRun implements WorkflowNode {
 
         // Resolve env vars before the retry loop
         Map<String, String> resolvedEnv = new LinkedHashMap<>();
-        // Plain value entries (may still contain inputs.parameters placeholders)
+        // Plain value entries (names and values may still contain inputs.parameters placeholders)
         for (var e : plainEnv.entrySet()) {
-            resolvedEnv.put(e.getKey(), substituteArtifactPaths(ctx.substitute(e.getValue(), inputParams)));
+            resolvedEnv.put(ctx.substitute(e.getKey(), inputParams), substituteArtifactPaths(ctx.substitute(e.getValue(), inputParams)));
         }
         // Ref-based entries resolved from ConfigMap / Secret (override plain if same name)
         for (EnvRef ref : envRefs) {
             String resolvedName = ctx.substitute(ref.resourceName(), inputParams);
             String resolvedKey  = ctx.substitute(ref.key(), inputParams);
-            resolvedEnv.put(ref.envName(), ref.isSecret()
+            resolvedEnv.put(ctx.substitute(ref.envName(), inputParams), ref.isSecret()
                     ? ctx.resolveSecretKey(ctx.namespace, resolvedName, resolvedKey)
                     : ctx.resolveConfigMapKey(ctx.namespace, resolvedName, resolvedKey));
         }

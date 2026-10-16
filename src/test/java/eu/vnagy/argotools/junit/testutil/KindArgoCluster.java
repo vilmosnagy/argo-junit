@@ -22,6 +22,8 @@ package eu.vnagy.argotools.junit.testutil;
 
 import com.dajudge.kindcontainer.KindContainer;
 import com.dajudge.kindcontainer.KindContainerVersion;
+import com.github.dockerjava.api.DockerClient;
+import com.github.dockerjava.api.model.ContainerNetwork;
 import eu.vnagy.argotools.junit.executor.ArgoWorkflowExecutor;
 import io.fabric8.kubernetes.api.model.ConfigMap;
 import io.fabric8.kubernetes.api.model.ConfigMapBuilder;
@@ -34,11 +36,14 @@ import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.testcontainers.DockerClientFactory;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 
 import java.io.InputStream;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -50,34 +55,66 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Installs the same {@code quick-start-minimal.yaml} that {@code ArgoKwok} uses for its CRDs
  * into the {@value #NAMESPACE} namespace — only the workflow controller and its RBAC; the bundled
- * argo-server, MinIO and httpbin are skipped. The namespace's default artifact repository is
- * pointed at an S3 endpoint reachable from the cluster (typically a {@link SiloContainer} on the
- * same {@link Network}), so templates with output artifacts but no explicit location work.
+ * argo-server, MinIO and httpbin are skipped. The namespace's default artifact repository can be
+ * pointed at an S3 endpoint reachable from the cluster (typically a {@link SiloContainer}
+ * attached with {@link #attach}), so templates with output artifacts but no explicit location work.
  *
- * <p>Needs privileged containers and pulls the Argo images from quay.io on every start; it is
- * meant for local runs, not CI.
+ * <p>There is one cluster, obtained via {@link #shared()}: it is started on first use and shared
+ * by every test class in the JVM. When Testcontainers reuse is enabled
+ * ({@code testcontainers.reuse.enable=true} in {@code ~/.testcontainers.properties}), the kind
+ * container and its network ({@value #NETWORK_NAME}) are also kept between test runs, so only the
+ * first run pays for booting kind and pulling the Argo images. Without reuse, the cluster is
+ * removed when the JVM exits. Remove a reused cluster with
+ * {@code docker rm -f <container>; docker network rm }{@value #NETWORK_NAME}.
+ *
+ * <p>Since the cluster outlives a test class, workflows, secrets and config maps created by one
+ * test stay around for later ones; {@link #run} deletes a workflow of the same name before
+ * submitting.
+ *
+ * <p>Needs privileged containers; it is meant for local runs, not CI.
  */
 public class KindArgoCluster {
 
     private static final Logger log = LoggerFactory.getLogger(KindArgoCluster.class);
 
     public static final String NAMESPACE = "argo";
+    /** Fixed, so a reused kind container finds its network again on the next run. */
+    public static final String NETWORK_NAME = "argo-junit-kind";
     private static final Set<String> SKIPPED_DEPLOYMENTS_AND_SERVICES = Set.of("argo-server", "minio", "httpbin");
     private static final Set<String> TERMINAL_PHASES = Set.of("Succeeded", "Failed", "Error");
+
+    private static KindArgoCluster shared;
 
     private final KindContainer<?> kind;
     private KubernetesClient k8s;
 
-    /**
-     * @param network the network the cluster node joins, so pods can reach other containers on it
-     *                by their network alias
-     */
-    public KindArgoCluster(Network network) {
-        // The default (newest) node image does not finish kubeadm init under rootless Podman.
-        kind = new KindContainer<>(KindContainerVersion.VERSION_1_33_4).withNetwork(network);
+    /** Returns the shared cluster, starting it (or reconnecting to a reused one) on first call. */
+    public static synchronized KindArgoCluster shared() {
+        if (shared == null) {
+            KindArgoCluster cluster = new KindArgoCluster();
+            cluster.start();
+            shared = cluster;
+        }
+        return shared;
     }
 
-    public void start() {
+    private KindArgoCluster() {
+        // The default (newest) node image does not finish kubeadm init under rootless Podman.
+        kind = new KindContainer<>(KindContainerVersion.VERSION_1_33_4)
+                .withNetwork(fixedNetwork())
+                .withReuse(true, "argo-junit")
+                // Once a test in the JVM calls Testcontainers.exposeHostPorts, every new container
+                // gets a host.testcontainers.internal entry with a per-JVM IP, which would change
+                // the reuse hash. Pods in kind don't need it.
+                .withCreateContainerCmdModifier(cmd -> {
+                    if (cmd.getExtraHosts() == null) return;
+                    cmd.withExtraHosts(Arrays.stream(cmd.getExtraHosts())
+                            .filter(h -> !h.startsWith("host.testcontainers.internal:"))
+                            .toArray(String[]::new));
+                });
+    }
+
+    private void start() {
         kind.start();
         k8s = new KubernetesClientBuilder().withConfig(Config.fromKubeconfig(kind.getKubeconfig())).build();
         k8s.namespaces().resource(new NamespaceBuilder().withNewMetadata().withName(NAMESPACE).endMetadata().build())
@@ -85,18 +122,30 @@ public class KindArgoCluster {
         installArgo();
     }
 
-    public void stop() {
-        if (k8s != null) k8s.close();
-        kind.stop();
-    }
-
     public KubernetesClient client() {
         return k8s;
     }
 
-    /** Creates {@code secret} in the {@value #NAMESPACE} namespace. */
+    /**
+     * Connects the running {@code container} to the cluster's network, so pods can reach it as
+     * {@code alias}. The container may already be on other networks.
+     */
+    public void attach(GenericContainer<?> container, String alias) {
+        DockerClientFactory.instance().client().connectToNetworkCmd()
+                .withContainerId(container.getContainerId())
+                .withNetworkId(NETWORK_NAME)
+                .withContainerNetwork(new ContainerNetwork().withAliases(alias))
+                .exec();
+    }
+
+    /** Creates (or updates) {@code secret} in the {@value #NAMESPACE} namespace. */
     public void createSecret(Secret secret) {
-        k8s.secrets().inNamespace(NAMESPACE).resource(secret).serverSideApply();
+        k8s.secrets().inNamespace(NAMESPACE).resource(secret).forceConflicts().serverSideApply();
+    }
+
+    /** Creates (or updates) {@code configMap} in the {@value #NAMESPACE} namespace. */
+    public void createConfigMap(ConfigMap configMap) {
+        k8s.configMaps().inNamespace(NAMESPACE).resource(configMap).forceConflicts().serverSideApply();
     }
 
     /**
@@ -134,11 +183,23 @@ public class KindArgoCluster {
      *
      * <p>Takes the YAML rather than a {@code Workflow} model: serializing the generated model
      * emits empty lists (e.g. {@code steps: []}) that Argo's CRD validation rejects.
+     *
+     * <p>A workflow with the same {@code metadata.name}, left over from an earlier run on the
+     * shared cluster, is deleted first.
      */
     public WorkflowOutcome run(String workflowYaml, Duration timeout) throws Exception {
         var mapper = ArgoWorkflowExecutor.yamlMapper();
         var resource = mapper.readValue(workflowYaml, GenericKubernetesResource.class);
         var workflows = k8s.genericKubernetesResources("argoproj.io/v1alpha1", "Workflow").inNamespace(NAMESPACE);
+        String fixedName = resource.getMetadata().getName();
+        if (fixedName != null && workflows.withName(fixedName).get() != null) {
+            log.debug("Deleting workflow '{}' left over from an earlier run", fixedName);
+            workflows.withName(fixedName).withTimeout(1, TimeUnit.MINUTES).delete();
+            // Pod names are derived from the workflow name, so the new run would collide with
+            // the old pods, which are garbage-collected in the background.
+            k8s.pods().inNamespace(NAMESPACE).withLabel("workflows.argoproj.io/workflow", fixedName)
+                    .withTimeout(1, TimeUnit.MINUTES).delete();
+        }
         String name = workflows.resource(resource).create().getMetadata().getName();
 
         Instant deadline = Instant.now().plus(timeout);
@@ -157,6 +218,31 @@ public class KindArgoCluster {
             }
             Thread.sleep(1000);
         }
+    }
+
+    /**
+     * A network with a fixed name, created on first use and never removed, so the reuse hash of
+     * the kind container stays the same between runs ({@link Network#newNetwork()} picks a random
+     * name each time).
+     */
+    private static Network fixedNetwork() {
+        DockerClient docker = DockerClientFactory.instance().client();
+        boolean exists = !docker.listNetworksCmd().withNameFilter(NETWORK_NAME).exec().stream()
+                .filter(n -> NETWORK_NAME.equals(n.getName())).toList().isEmpty();
+        if (!exists) {
+            docker.createNetworkCmd().withName(NETWORK_NAME).exec();
+        }
+        return new Network() {
+            @Override
+            public String getId() {
+                return NETWORK_NAME;
+            }
+
+            @Override
+            public void close() {
+                // Kept for the reused kind container.
+            }
+        };
     }
 
     private void installArgo() {

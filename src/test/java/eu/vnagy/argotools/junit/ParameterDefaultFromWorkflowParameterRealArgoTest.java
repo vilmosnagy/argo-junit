@@ -22,10 +22,8 @@ package eu.vnagy.argotools.junit;
 
 import eu.vnagy.argotools.junit.testutil.KindArgoCluster;
 import eu.vnagy.argotools.junit.testutil.WorkflowOutcome;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable;
-import org.testcontainers.containers.Network;
 
 import java.time.Duration;
 
@@ -40,20 +38,11 @@ import java.time.Duration;
 @DisabledIfEnvironmentVariable(named = "CI", matches = "true")
 class ParameterDefaultFromWorkflowParameterRealArgoTest extends ParameterDefaultFromWorkflowParameterBase {
 
-    static Network network;
     static KindArgoCluster argo;
 
     @BeforeAll
     static void setUpArgo() {
-        network = Network.newNetwork();
-        argo = new KindArgoCluster(network);
-        argo.start();
-    }
-
-    @AfterAll
-    static void tearDownArgo() {
-        if (argo != null) argo.stop();
-        if (network != null) network.close();
+        argo = KindArgoCluster.shared();
     }
 
     @Override

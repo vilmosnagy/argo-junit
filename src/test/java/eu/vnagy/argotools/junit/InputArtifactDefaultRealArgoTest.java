@@ -23,7 +23,6 @@ package eu.vnagy.argotools.junit;
 import eu.vnagy.argotools.junit.testutil.KindArgoCluster;
 import eu.vnagy.argotools.junit.testutil.SiloContainer;
 import eu.vnagy.argotools.junit.testutil.WorkflowOutcome;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable;
 
@@ -45,15 +44,10 @@ class InputArtifactDefaultRealArgoTest extends InputArtifactDefaultBase {
 
     @BeforeAll
     static void setUpArgo() {
-        argo = new KindArgoCluster(network);
-        argo.start();
+        argo = KindArgoCluster.shared();
+        argo.attach(minio, SILO_ALIAS);
         argo.createSecret(minio.credentialsSecret(SECRET_NAME, "access-key", "secret-key"));
         argo.useS3ArtifactRepository(inClusterS3Endpoint(), BUCKET, SECRET_NAME);
-    }
-
-    @AfterAll
-    static void tearDownArgo() {
-        if (argo != null) argo.stop();
     }
 
     @Override

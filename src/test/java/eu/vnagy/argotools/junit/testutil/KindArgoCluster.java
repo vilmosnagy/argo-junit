@@ -149,6 +149,22 @@ public class KindArgoCluster {
     }
 
     /**
+     * Creates (or updates) the single resource in {@code yaml}, e.g. a WorkflowTemplate. A
+     * namespaced resource lands in the {@value #NAMESPACE} namespace.
+     */
+    public void apply(String yaml) throws Exception {
+        var resource = ArgoWorkflowExecutor.yamlMapper().readValue(yaml, GenericKubernetesResource.class);
+        boolean namespaced = k8s.getApiResources(resource.getApiVersion()).getResources().stream()
+                .filter(r -> resource.getKind().equals(r.getKind()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Unknown kind " + resource.getKind()))
+                .getNamespaced();
+        var resources = k8s.genericKubernetesResources(resource.getApiVersion(), resource.getKind());
+        (namespaced ? resources.inNamespace(NAMESPACE) : resources)
+                .resource(resource).forceConflicts().serverSideApply();
+    }
+
+    /**
      * Makes {@code s3} the default artifact repository of the {@value #NAMESPACE} namespace.
      *
      * @param endpoint   {@code host:port} as seen from inside the cluster

@@ -38,7 +38,9 @@ import eu.vnagy.argotools.junit.model.RetryStrategy;
 import eu.vnagy.argotools.junit.model.Template;
 import eu.vnagy.argotools.junit.model.TemplateRef;
 import eu.vnagy.argotools.junit.model.Workflow;
+import eu.vnagy.argotools.junit.model.WorkflowSpec;
 import eu.vnagy.argotools.junit.model.WorkflowStep;
+import eu.vnagy.argotools.junit.model.WorkflowTemplateRef;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.dsl.base.ResourceDefinitionContext;
@@ -116,6 +118,22 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
             new ResourceDefinitionContext.Builder()
                     .withGroup("argoproj.io").withVersion("v1alpha1").withKind("WorkflowTemplate")
                     .withNamespaced(true).build();
+
+    public static final ResourceDefinitionContext CLUSTER_WORKFLOW_TEMPLATE_CTX =
+            new ResourceDefinitionContext.Builder()
+                    .withGroup("argoproj.io").withVersion("v1alpha1").withKind("ClusterWorkflowTemplate")
+                    .withNamespaced(false).build();
+
+    // Lists Argo's WorkflowSpec marks patchStrategy: merge, by field name -> merge key. Every
+    // other list in a workflowTemplateRef join is replaced wholesale.
+    private static final Map<String, String> MERGE_KEYS = Map.of(
+            "templates", "name",
+            "parameters", "name",
+            "artifacts", "name",
+            "volumes", "name",
+            "tolerations", "key",
+            "imagePullSecrets", "name",
+            "hostAliases", "ip");
 
     private final Workflow workflow;
     private String namespace = "default";
@@ -311,16 +329,25 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
      * {@link WorkflowRun#await()} (or use {@link #execute()} directly) to block until
      * the workflow completes. Close the {@link WorkflowRun} to release its temp directory.
      *
+     * <p>A workflow with {@code spec.workflowTemplateRef} is first joined with the referenced
+     * WorkflowTemplate (or ClusterWorkflowTemplate) fetched from kwok, the way Argo's
+     * {@code JoinWorkflowSpec} does: fields the workflow sets win, the rest come from the
+     * template, and {@code arguments.parameters} are merged by name.
+     *
      * @return a handle to the running workflow
+     * @throws IllegalStateException    if {@code spec.workflowTemplateRef} is set but no kwok
+     *                                  cluster is attached, or the template is not found
+     * @throws IllegalArgumentException if the workflow spec is invalid
      */
     public WorkflowRun executeAsync() {
-        String entrypointName = workflow.getSpec().getEntrypoint();
+        WorkflowSpec spec = joinWorkflowTemplateRef(workflow.getSpec());
+        String entrypointName = spec.getEntrypoint();
         log.debug("Entrypoint: {}", entrypointName);
 
         Map<String, String> workflowParams = new LinkedHashMap<>();
-        if (workflow.getSpec().getArguments() != null &&
-                workflow.getSpec().getArguments().getParameters() != null) {
-            for (Parameter p : workflow.getSpec().getArguments().getParameters()) {
+        if (spec.getArguments() != null &&
+                spec.getArguments().getParameters() != null) {
+            for (Parameter p : spec.getArguments().getParameters()) {
                 if (p.getValue() != null) {
                     workflowParams.put(p.getName(), p.getValue());
                 } else if (p.getValueFrom() != null && p.getValueFrom().getConfigMapKeyRef() != null) {
@@ -333,14 +360,14 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         }
 
         Map<String, Template> templateMap = new LinkedHashMap<>();
-        for (Template t : workflow.getSpec().getTemplates()) {
+        for (Template t : spec.getTemplates()) {
             templateMap.put(t.getName(), t);
         }
         log.debug("Templates: {}", templateMap.keySet());
 
         if (k8sClient != null) {
             List<String> roots = new ArrayList<>(List.of(entrypointName));
-            String onExitForRefs = workflow.getSpec().getOnExit();
+            String onExitForRefs = spec.getOnExit();
             if (onExitForRefs != null) roots.add(onExitForRefs);
             templateMap.putAll(resolveTemplateRefs(Collections.unmodifiableMap(templateMap), roots));
         }
@@ -359,17 +386,17 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 .collect(Collectors.toList());
 
         Map<String, IoK8sApiCoreV1Volume> volumes = new LinkedHashMap<>();
-        if (workflow.getSpec().getVolumes() != null) {
-            for (IoK8sApiCoreV1Volume v : workflow.getSpec().getVolumes()) {
+        if (spec.getVolumes() != null) {
+            for (IoK8sApiCoreV1Volume v : spec.getVolumes()) {
                 volumes.put(v.getName(), v);
             }
         }
 
         RetryStrategy defaultRetryStrategy = null;
-        if (workflow.getSpec().getTemplateDefaults() != null)
-            defaultRetryStrategy = workflow.getSpec().getTemplateDefaults().getRetryStrategy();
+        if (spec.getTemplateDefaults() != null)
+            defaultRetryStrategy = spec.getTemplateDefaults().getRetryStrategy();
         if (defaultRetryStrategy == null)
-            defaultRetryStrategy = workflow.getSpec().getRetryStrategy();
+            defaultRetryStrategy = spec.getRetryStrategy();
 
         var meta = workflow.getMetadata();
         String workflowName = null;
@@ -395,13 +422,13 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
                 .build();
 
         // Download workflow-level HTTP input artifacts before execution starts
-        Map<String, Path> workflowArtifacts = downloadWorkflowArtifacts(ctx.tmpDir);
+        Map<String, Path> workflowArtifacts = downloadWorkflowArtifacts(spec, ctx.tmpDir);
         ExecutionContext rootCtx = workflowArtifacts.isEmpty()
                 ? ctx : ctx.withInputArtifacts(workflowArtifacts);
 
         WorkflowNode root = WorkflowNode.from(entrypointName, entrypointTemplate, templateMap, Set.of());
 
-        String onExitName = workflow.getSpec().getOnExit();
+        String onExitName = spec.getOnExit();
         WorkflowNode exitHandlerNode = null;
         CompletableFuture<Void> future;
 
@@ -489,6 +516,97 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Returns {@code spec} joined with the WorkflowTemplate its {@code workflowTemplateRef}
+     * names, or {@code spec} itself when it has no reference.
+     *
+     * <p>Mirrors Argo's {@code JoinWorkflowSpec}: the workflow's spec is laid over the
+     * template's as a strategic merge. Objects merge recursively and a value the workflow sets
+     * wins; the lists in {@link #MERGE_KEYS} are merged element by element on their key, every
+     * other list is replaced. So {@code entrypoint}, {@code onExit}, {@code templateDefaults} and
+     * the like fall back to the template's, and workflow {@code arguments.parameters} override
+     * only the parameters they name. Like Argo, a workflow with a reference may not define
+     * {@code templates} of its own.
+     */
+    private WorkflowSpec joinWorkflowTemplateRef(WorkflowSpec spec) {
+        WorkflowTemplateRef ref = spec.getWorkflowTemplateRef();
+        if (ref == null) return spec;
+        if (spec.getTemplates() != null && !spec.getTemplates().isEmpty()) throw new IllegalArgumentException(
+                "invalid spec: Templates is invalid field in spec if workflow referred WorkflowTemplate reference");
+
+        boolean clusterScope = Boolean.TRUE.equals(ref.getClusterScope());
+        String kind = clusterScope ? "ClusterWorkflowTemplate" : "WorkflowTemplate";
+        if (k8sClient == null) throw new IllegalStateException(
+                "spec.workflowTemplateRef requires " + kind + " '" + ref.getName() + "' from a Kubernetes"
+                + " cluster — call withKwok() or getKubernetesClient() before execute()");
+        log.debug("Fetching {} '{}' for spec.workflowTemplateRef", kind, ref.getName());
+        GenericKubernetesResource wt = clusterScope
+                ? k8sClient.genericKubernetesResources(CLUSTER_WORKFLOW_TEMPLATE_CTX).withName(ref.getName()).get()
+                : k8sClient.genericKubernetesResources(WORKFLOW_TEMPLATE_CTX)
+                        .inNamespace(namespace).withName(ref.getName()).get();
+        if (wt == null) throw new IllegalStateException(
+                "spec.workflowTemplateRef requires " + kind + " '" + ref.getName() + "' but it was not found"
+                + (clusterScope ? "" : " in namespace '" + namespace + "'"));
+
+        Object wtSpec = wt.getAdditionalProperties().get("spec");
+        Object wfSpec = prune(JSON.convertValue(spec, Object.class));
+        return JSON.convertValue(strategicMerge(wtSpec, wfSpec, null), WorkflowSpec.class);
+    }
+
+    /**
+     * Lays {@code overlay} over {@code base}; {@code field} is the name the values sit under in
+     * their parent, which picks the merge key for lists.
+     */
+    @SuppressWarnings("unchecked")
+    private static Object strategicMerge(Object base, Object overlay, String field) {
+        if (overlay == null) return base;
+        if (base instanceof Map<?, ?> baseMap && overlay instanceof Map<?, ?> overlayMap) {
+            Map<String, Object> merged = new LinkedHashMap<>((Map<String, Object>) baseMap);
+            ((Map<String, Object>) overlayMap).forEach((k, v) -> merged.put(k, strategicMerge(merged.get(k), v, k)));
+            return merged;
+        }
+        String mergeKey = MERGE_KEYS.get(field);
+        if (mergeKey != null && base instanceof List<?> baseList && overlay instanceof List<?> overlayList) {
+            List<Object> merged = new ArrayList<>(baseList);
+            for (Object item : overlayList) {
+                Object key = item instanceof Map<?, ?> m ? m.get(mergeKey) : null;
+                int index = -1;
+                for (int i = 0; key != null && i < merged.size(); i++) {
+                    if (merged.get(i) instanceof Map<?, ?> m && key.equals(m.get(mergeKey))) index = i;
+                }
+                if (index >= 0) merged.set(index, strategicMerge(merged.get(index), item, null));
+                else merged.add(item);
+            }
+            return merged;
+        }
+        return overlay;
+    }
+
+    /**
+     * Drops nulls and empty lists, which the generated model emits for fields the workflow
+     * never set, so they don't shadow the template's values in a merge. Empty maps stay: they
+     * can be meaningful, e.g. {@code emptyDir: {}}.
+     */
+    private static Object prune(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<Object, Object> pruned = new LinkedHashMap<>();
+            map.forEach((k, v) -> {
+                Object p = prune(v);
+                if (p != null) pruned.put(k, p);
+            });
+            return pruned;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> pruned = new ArrayList<>();
+            for (Object item : list) {
+                Object p = prune(item);
+                if (p != null) pruned.add(p);
+            }
+            return pruned.isEmpty() ? null : pruned;
+        }
+        return value;
+    }
 
     /**
      * Fetches all WorkflowTemplates transitively reachable from {@code entrypointName} and
@@ -633,16 +751,16 @@ public class ArgoWorkflowExecutor implements AutoCloseable {
         return new String(chars);
     }
 
-    private Map<String, Path> downloadWorkflowArtifacts(Path tmpDir) {
-        if (workflow.getSpec().getArguments() == null
-                || workflow.getSpec().getArguments().getArtifacts() == null) {
+    private Map<String, Path> downloadWorkflowArtifacts(WorkflowSpec spec, Path tmpDir) {
+        if (spec.getArguments() == null
+                || spec.getArguments().getArtifacts() == null) {
             return Map.of();
         }
         Map<String, Path> downloaded = new LinkedHashMap<>();
         HttpClient http = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.ALWAYS)
                 .build();
-        for (Artifact a : workflow.getSpec().getArguments().getArtifacts()) {
+        for (Artifact a : spec.getArguments().getArtifacts()) {
             if (a.getRaw() != null && a.getRaw().getData() != null) {
                 try {
                     Path dest = Files.createTempFile(tmpDir, "artifact-" + a.getName() + "-", "");

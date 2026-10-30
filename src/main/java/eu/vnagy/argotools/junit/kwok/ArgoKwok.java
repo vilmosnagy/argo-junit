@@ -276,10 +276,11 @@ public class ArgoKwok {
                 int slash = apiVersion.indexOf('/');
                 String group   = slash >= 0 ? apiVersion.substring(0, slash) : "";
                 String version = slash >= 0 ? apiVersion.substring(slash + 1) : apiVersion;
-                k8s.genericKubernetesResources(new ResourceDefinitionContext.Builder()
-                                .withGroup(group).withVersion(version).withKind(kind)
-                                .withNamespaced(true).build())
-                        .inNamespace(ns != null ? ns : "default")
+                boolean namespaced = isNamespaced(apiVersion, kind);
+                var resources = k8s.genericKubernetesResources(new ResourceDefinitionContext.Builder()
+                        .withGroup(group).withVersion(version).withKind(kind)
+                        .withNamespaced(namespaced).build());
+                (namespaced ? resources.inNamespace(ns != null ? ns : "default") : resources)
                         .resource(gkr).createOrReplace();
             } else {
                 k8s.resource(item).inNamespace(ns != null ? ns : "default").createOrReplace();
@@ -287,6 +288,20 @@ public class ArgoKwok {
         } catch (Exception e) {
             log.debug("Skipping {}/{}: {}", kind, name, e.getMessage());
         }
+    }
+
+    /**
+     * Asks the API server whether {@code kind} is namespaced, e.g. {@code false} for a
+     * {@code ClusterWorkflowTemplate}. Assumes namespaced when discovery doesn't know the kind.
+     */
+    private boolean isNamespaced(String apiVersion, String kind) {
+        var apiResources = k8s.getApiResources(apiVersion);
+        if (apiResources == null) return true;
+        return apiResources.getResources().stream()
+                .filter(r -> kind.equals(r.getKind()))
+                .findFirst()
+                .map(r -> !Boolean.FALSE.equals(r.getNamespaced()))
+                .orElse(true);
     }
 
     private void waitForWorkflowTemplateCrd() {

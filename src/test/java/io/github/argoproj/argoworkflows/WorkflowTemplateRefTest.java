@@ -42,12 +42,16 @@ import java.time.Duration;
  *
  * <p>A single {@link ArgoKwok} cluster is started once for the class; the Argo CRDs and
  * all WorkflowTemplate definitions from {@code examples/workflow-template/templates.yaml}
- * are applied once in {@code @BeforeAll}. Each {@code @Test} method creates its own
+ * (plus the ClusterWorkflowTemplates from
+ * {@code examples/cluster-workflow-template/clustertemplates.yaml}) are applied once in
+ * {@code @BeforeAll}. Each {@code @Test} method creates its own
  * {@link ArgoWorkflowExecutor} instance (sharing the same kwok via
  * {@link ArgoWorkflowExecutor#withKwok}), so container startup cost is paid only once.
  *
  * <p>The executor resolves {@code templateRef} fields by fetching the named WorkflowTemplate
  * from kwok and merging its templates into the execution graph before running any steps.
+ * A Workflow-level {@code spec.workflowTemplateRef} is joined with the referenced
+ * (Cluster)WorkflowTemplate's spec first.
  */
 public class WorkflowTemplateRefTest {
 
@@ -58,6 +62,7 @@ public class WorkflowTemplateRefTest {
         argoKwok = new ArgoKwok();
         argoKwok.start();
         argoKwok.applyYaml("/examples/workflow-template/templates.yaml");
+        argoKwok.applyYaml("/examples/cluster-workflow-template/clustertemplates.yaml");
     }
 
     @AfterAll
@@ -103,11 +108,46 @@ public class WorkflowTemplateRefTest {
         }
     }
 
+    @Test
+    void workflowLevelTemplateRef() throws Exception {
+        try (WorkflowRun run = executorFor("workflow-template-ref.yaml").execute(Duration.ofMinutes(10))) {
+            assertThat(run.succeeded(), is(true));
+        }
+    }
+
+    @Test
+    void workflowLevelTemplateRefWithEntrypointAndArguments() throws Exception {
+        try (WorkflowRun run = executorFor("workflow-template-ref-with-entrypoint-arg-passing.yaml")
+                .execute(Duration.ofMinutes(10))) {
+            assertThat(run.succeeded(), is(true));
+        }
+    }
+
+    @Test
+    void workflowLevelClusterTemplateRef() throws Exception {
+        try (WorkflowRun run = executorFor("/examples/cluster-workflow-template/", "workflow-template-ref.yaml")
+                .execute(Duration.ofMinutes(10))) {
+            assertThat(run.succeeded(), is(true));
+        }
+    }
+
+    @Test
+    void workflowLevelClusterTemplateRefWithEntrypointAndArguments() throws Exception {
+        try (WorkflowRun run = executorFor("/examples/cluster-workflow-template/",
+                "workflow-template-ref-with-entrypoint-arg-passing.yaml").execute(Duration.ofMinutes(10))) {
+            assertThat(run.succeeded(), is(true));
+        }
+    }
+
     // -------------------------------------------------------------------------
 
     private static ArgoWorkflowExecutor executorFor(String filename) throws Exception {
+        return executorFor("/examples/workflow-template/", filename);
+    }
+
+    private static ArgoWorkflowExecutor executorFor(String directory, String filename) throws Exception {
         URI resource = WorkflowTemplateRefTest.class
-                .getResource("/examples/workflow-template/" + filename).toURI();
+                .getResource(directory + filename).toURI();
         return ArgoWorkflowExecutor.from(Path.of(resource)).withKwok(argoKwok.container());
     }
 }

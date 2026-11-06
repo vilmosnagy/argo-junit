@@ -93,6 +93,14 @@
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>s3</artifactId>
             <version>2.29.51</version>
+            <exclusions>
+                <!-- Unused (S3 uses UrlConnectionHttpClient); it pins netty 4.1, which breaks
+                     fabric8's Vert.x 5 HTTP client that needs netty 4.2. -->
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>netty-nio-client</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>software.amazon.awssdk</groupId>

@@ -83,6 +83,6 @@ class LoopRunSummaryTest {
                 .replaceAll("\\d+m \\d+s|\\d+s", "{duration}")
                 .replaceAll("\\{duration} {2,}", "{duration}  ")
                 .replaceAll("[0-9a-f]{12}", "{cid}")
-                .replaceAll("\\(Service: S3, Status Code: \\d+[^)]*\\)", "{s3-sdk}");
+                .replaceAll("\\(Service: S3, Status Code: \\d+[^)]*\\)( \\(SDK Attempt Count: \\d+\\))?", "{s3-sdk}");
     }
 }
